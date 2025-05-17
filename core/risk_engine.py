@@ -1,31 +1,32 @@
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 
 class RiskManager:
-    def __init__(self, max_drawdown=0.25, daily_loss_limit=0.1):
+    def __init__(self, max_drawdown: float = 0.05, max_daily_trades: int = 3):
+        """
+        Args:
+            max_drawdown: Max allowed daily loss percentage (e.g., 0.05 for 5%)
+            max_daily_trades: Maximum trades per 24h period
+        """
         self.max_drawdown = max_drawdown
-        self.daily_loss_limit = daily_loss_limit
-        self.today_loss = 0
+        self.max_daily_trades = max_daily_trades
+        self.today_trades = 0
         self.last_reset = datetime.now()
-        
-    def validate_trade(self, trade_size, portfolio_value):
-        """Check if trade meets risk parameters"""
-        # Reset daily loss counter if new day
-        if datetime.now() - self.last_reset > timedelta(days=1):
-            self.today_loss = 0
+        self.daily_pnl = 0.0
+
+    def can_trade(self) -> bool:
+        """Check if trading is allowed"""
+        self._reset_daily_counter()
+        return (self.today_trades < self.max_daily_trades and 
+                self.daily_pnl > -abs(self.max_drawdown))
+
+    def record_trade(self, pnl_change: float = 0):
+        """Update trade counters"""
+        self.today_trades += 1
+        self.daily_pnl += pnl_change
+
+    def _reset_daily_counter(self):
+        """Reset counters at midnight"""
+        if datetime.now().day != self.last_reset.day:
+            self.today_trades = 0
+            self.daily_pnl = 0.0
             self.last_reset = datetime.now()
-            
-        # Check max position size (5% of portfolio)
-        if trade_size > portfolio_value * 0.05:
-            return False
-            
-        # Check daily loss limit
-        if self.today_loss >= portfolio_value * self.daily_loss_limit:
-            return False
-            
-        return True
-    
-    def update_after_trade(self, pnl):
-        """Update risk metrics after trade execution"""
-        if pnl < 0:
-            self.today_loss += abs(pnl)

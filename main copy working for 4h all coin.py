@@ -13,11 +13,12 @@ from utils.config import Config
 
 class TradingBot:
     def __init__(self):
-        # Initialize directories
+        """Initialize all components in correct order"""
+        # Setup directories
         os.makedirs("data/historical", exist_ok=True)
         os.makedirs("data/logs", exist_ok=True)
 
-        # Core components
+        # Core components (MUST be in this order)
         self.logger = TradeLogger()
         self.exchange = BinanceAPI(
             api_key=Config.BINANCE_API_KEY,
@@ -32,9 +33,9 @@ class TradingBot:
         self.backup = BackupManager()
 
         # Trading parameters
-        self.candle_interval = self._validate_interval(Config.CANDLE_INTERVAL)
-        self.update_interval = self._get_update_interval()
         self.symbols = self._get_approved_symbols()
+        self.candle_interval = Config.CANDLE_INTERVAL
+        self.update_interval = self._get_update_interval()
         
         # System state
         self.last_trade_time = {}
@@ -42,42 +43,9 @@ class TradingBot:
         self.account_balance = 0.0
 
         # Initialize
-        self._print_configuration()
+        self._print_welcome()
         self._load_all_historical_data()
         self._log_startup()
-
-    def _validate_interval(self, interval: str) -> str:
-        """Ensure valid candle interval"""
-        valid_intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
-        if interval not in valid_intervals:
-            print(f"⚠️ Invalid interval. Defaulting to 4h")
-            return "4h"
-        return interval
-
-    def _get_update_interval(self) -> int:
-        """Convert candle interval to seconds with buffer"""
-        interval_map = {
-            '1m': 60 + 15,      # 1m + 15s buffer
-            '5m': 300 + 30,      # 5m + 30s
-            '15m': 900 + 45,     # 15m + 45s
-            '30m': 1800 + 60,    # 30m + 1m
-            '1h': 3600 + 120,    # 1h + 2m
-            '4h': 14400 + 300,   # 4h + 5m
-            '1d': 86400 + 600    # 1d + 10m
-        }
-        return interval_map.get(self.candle_interval, 3600)
-
-    def _print_configuration(self):
-        """Display current settings"""
-        print("\n" + "="*50)
-        print(f"⚙️  TRADING CONFIGURATION")
-        print("="*50)
-        print(f"• Timeframe: {self.candle_interval} candles")
-        print(f"• Max Trades/Day: {Config.MAX_DAILY_TRADES}")
-        print(f"• Risk/Trade: {float(Config.RISK_PER_TRADE)*100}%")
-        print(f"• Max Volatility: {Config.MAX_VOLATILITY}%")
-        print(f"• Min Volume: ${int(Config.MIN_VOLUME):,}")
-        print("="*50 + "\n")
 
     def _get_approved_symbols(self) -> List[str]:
         """Filter symbols based on stability criteria"""
@@ -95,8 +63,8 @@ class TradingBot:
         try:
             ticker = self.exchange.client.get_ticker(symbol=symbol)
             return (
-                float(ticker['quoteVolume']) > float(Config.MIN_VOLUME) and
-                abs(float(ticker['priceChangePercent'])) < float(Config.MAX_VOLATILITY)
+                float(ticker['quoteVolume']) > 10_000_000 and  # $10M daily volume
+                abs(float(ticker['priceChangePercent'])) < 15   # <15% daily change
             )
         except Exception as e:
             self.logger.log_trade(
@@ -104,6 +72,25 @@ class TradingBot:
                 details=f"Symbol check failed for {symbol}: {str(e)}"
             )
             return False
+
+    def _get_update_interval(self) -> int:
+        """Convert candle interval to seconds"""
+        interval_map = {
+            '1m': 60,
+            '5m': 300,
+            '15m': 900,
+            '1h': 3600,
+            '4h': 14400,
+            '1d': 86400
+        }
+        return interval_map.get(self.candle_interval, 3600)  # Default 1h
+
+    def _print_welcome(self):
+        """Display startup banner"""
+        print("\n" + "="*50)
+        print(f"CRYPTO BOT v3.2 (Set-and-Forget Mode)")
+        print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*50 + "\n")
 
     def _load_all_historical_data(self):
         """Load or download data for all symbols"""
@@ -133,21 +120,18 @@ class TradingBot:
             )
 
     def _log_startup(self):
-        """Record startup details"""
+        """Fixed startup logging with all required fields"""
         self.logger.log_trade(
             event_type="STARTUP",
             symbols=",".join(self.symbols),
             interval=self.candle_interval,
             details=f"Initialized with {len(self.symbols)} pairs"
         )
-        self.alerts.bot_started("3.3", self.symbols)
+        self.alerts.bot_started("3.2-STABLE", self.symbols)
 
     def run(self):
-        """Main trading loop with dynamic timing"""
-        print(f"\n🚀 Trading Bot Active ({self.candle_interval} timeframe)")
-        print(f"📊 Monitoring {len(self.symbols)} pairs")
-        print("⏳ Press Ctrl+C to stop\n")
-        
+        """Main trading loop"""
+        print("\n🚀 Starting trading engine (Ctrl+C to exit)")
         try:
             while True:
                 cycle_start = time.time()
@@ -161,16 +145,11 @@ class TradingBot:
                 # Execute strategies
                 self._run_strategies()
                 
-                # Calculate sleep time with progress bar
+                # Sleep until next cycle
                 elapsed = time.time() - cycle_start
                 sleep_time = max(5, self.update_interval - elapsed)
-                
-                # Visual countdown
-                print(f"\n⏳ Next analysis in {sleep_time:.0f}s [", end="", flush=True)
-                for _ in range(int(sleep_time)):
-                    print("#", end="", flush=True)
-                    time.sleep(1)
-                print("]")
+                print(f"\n⏳ Next update in {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
 
         except KeyboardInterrupt:
             print("\n🛑 Received shutdown signal...")
@@ -223,7 +202,7 @@ class TradingBot:
         for symbol in self.symbols:
             # Skip if traded recently
             if symbol in self.last_trade_time:
-                if time.time() - self.last_trade_time[symbol] < 86400:
+                if time.time() - self.last_trade_time[symbol] < 86400:  # 24h cooldown
                     continue
 
             # Get and validate data
@@ -246,10 +225,10 @@ class TradingBot:
             print("⚠️ Price check failed")
             return
 
-        # Calculate position size
-        risk_amount = self.account_balance * float(Config.RISK_PER_TRADE)
+        # Calculate position size (1% risk)
+        risk_amount = self.account_balance * 0.01
         quantity = risk_amount / price
-        quantity = round(quantity, 6)
+        quantity = round(quantity, 6)  # Binance precision
 
         # Execute order
         order = self.exchange.execute_order(symbol, signal, quantity)
@@ -276,10 +255,11 @@ class TradingBot:
 if __name__ == "__main__":
     # Validate configuration
     required_config = [
-        'BINANCE_API_KEY', 'BINANCE_API_SECRET',
-        'CANDLE_INTERVAL', 'MAX_DAILY_TRADES',
-        'MAX_DRAWDOWN', 'RISK_PER_TRADE',
-        'MIN_VOLUME', 'MAX_VOLATILITY'
+        'BINANCE_API_KEY',
+        'BINANCE_API_SECRET',
+        'MAX_DRAWDOWN',
+        'MAX_DAILY_TRADES',
+        'CANDLE_INTERVAL'
     ]
     
     missing = [key for key in required_config if not hasattr(Config, key)]

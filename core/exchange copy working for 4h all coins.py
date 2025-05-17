@@ -3,7 +3,6 @@ import time
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from typing import Dict, Optional, List, Union
-from utils.config import Config  # <-- ADD THIS IMPORT
 
 class BinanceAPI:
     # Approved stablecoin pairs with USDT
@@ -41,7 +40,7 @@ class BinanceAPI:
         try:
             ticker = self.client.get_ticker(symbol=symbol)
             price_change = float(ticker['priceChangePercent'])
-            if abs(price_change) > float(Config.MAX_VOLATILITY):
+            if abs(price_change) > 15:
                 print(f"⚠️ High volatility: {symbol} ({price_change}%)")
                 return None
             return float(ticker['lastPrice'])
@@ -49,20 +48,13 @@ class BinanceAPI:
             print(f"Price error: {e}")
             return None
 
-    def get_klines(self, symbol: str, interval: str = None) -> Optional[List[Dict]]:
-        """Get candle data with interval validation"""
-        valid_intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
-        interval = interval or Config.CANDLE_INTERVAL
-        
-        if interval not in valid_intervals:
-            print(f"⚠️ Invalid interval {interval}. Using 1h")
-            interval = '1h'
-
+    def get_klines(self, symbol: str, interval: str = '4h', limit: int = 100) -> Optional[List[Dict]]:
+        """Get candle data with stability checks"""
         try:
             klines = self.client.get_klines(
                 symbol=symbol,
                 interval=interval,
-                limit=100
+                limit=limit
             )
             return [{
                 'time': k[0],
