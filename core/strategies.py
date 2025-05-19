@@ -1,84 +1,117 @@
 import pandas as pd
 import numpy as np
+from typing import Dict, List, Optional
 from utils.config import Config
 
-class EMAStrategy:
+try:
+    import talib
+    TA_LIB_AVAILABLE = True
+except ImportError:
+    TA_LIB_AVAILABLE = False
+    print("TA-Lib not available, using fallback calculations")
+
+class SmartTrendStrategy:
     def __init__(self):
-        self.ema_short = 9
-        self.ema_long = 21
-        self.min_volume = 100  # Minimum BTC volume (in USDT)
+        self.ema_short = Config.SMARTTREND_EMA_SHORT
+        self.ema_long = Config.SMARTTREND_EMA_LONG
+        self.rsi_period = Config.SMARTTREND_RSI_PERIOD
+        self.rsi_overbought = Config.SMARTTREND_RSI_OVERBOUGHT
+        self.rsi_oversold = Config.SMARTTREND_RSI_OVERSOLD
+        self.min_volume = Config.MIN_VOLUME
         
-    def generate_signal(self, data):
-        """
-        Generates signals based on EMA crossover with volume confirmation
-        Returns: 'BUY', 'SELL', or None
-        """
-        if len(data) < 22:  # Need at least 21 periods for EMA
+    def _calculate_rsi(self, prices: List[float]) -> List[float]:
+        """Calculate RSI with or without TA-Lib"""
+        if TA_LIB_AVAILABLE:
+            return talib.RSI(prices, timeperiod=self.rsi_period)
+        
+        # Fallback RSI calculation
+        deltas = np.diff(prices)
+        seed = deltas[:self.rsi_period+1]
+        up = seed[seed >= 0].sum()/self.rsi_period
+        down = -seed[seed < 0].sum()/self.rsi_period
+        rs = up/down
+        rsi = np.zeros_like(prices)
+        rsi[:self.rsi_period] = 100. - 100./(1.+rs)
+
+        for i in range(self.rsi_period, len(prices)):
+            delta = deltas[i-1]
+            if delta > 0:
+                upval = delta
+                downval = 0.
+            else:
+                upval = 0.
+                downval = -delta
+
+            up = (up*(self.rsi_period-1) + upval)/self.rsi_period
+            down = (down*(self.rsi_period-1) + downval)/self.rsi_period
+            rs = up/down
+            rsi[i] = 100. - 100./(1.+rs)
+
+        return rsi
+
+    def generate_signal(self, data: List[Dict]) -> Optional[str]:
+        """Advanced strategy with TA-Lib fallback"""
+        if len(data) < 50:
             return None
             
         df = pd.DataFrame(data)
-        df['ema9'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
-        df['ema21'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
+        closes = df['close'].values
         
-        # Current and previous values
+        # Volume check
+        if df['volume'].iloc[-1] < self.min_volume:
+            return None
+            
+        # Calculate EMAs
+        df['ema_short'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
+        df['ema_long'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
+        
+        # Calculate RSI
+        df['rsi'] = self._calculate_rsi(closes)
+        
         current = df.iloc[-1]
         previous = df.iloc[-2]
         
-        # Volume check
-        if current['volume'] < self.min_volume:
-            return None
-            
-        # Bullish signal (EMA9 crosses above EMA21)
-        if (previous['ema9'] <= previous['ema21']) and (current['ema9'] > current['ema21']):
+        # Bullish conditions
+        if (current['ema_short'] > current['ema_long'] and 
+            current['rsi'] > 50 and 
+            previous['rsi'] <= 50 and
+            current['rsi'] < self.rsi_overbought):
             return 'BUY'
             
-        # Bearish signal (EMA9 crosses below EMA21)
-        elif (previous['ema9'] >= previous['ema21']) and (current['ema9'] < current['ema21']):
+        # Bearish conditions
+        elif (current['ema_short'] < current['ema_long'] and 
+              current['rsi'] < 50 and 
+              previous['rsi'] >= 50 and
+              current['rsi'] > self.rsi_oversold):
             return 'SELL'
             
         return None
 
-class SmartTrendStrategy:
+class EMACrossStrategy:
     def __init__(self):
-        self.ema_short = 8
-        self.ema_long = 20
-        self.rsi_period = 14
-        self.rsi_overbought = 70
-        self.rsi_oversold = 30
+        self.ema_short = Config.EMA_SHORT_PERIOD
+        self.ema_long = Config.EMA_LONG_PERIOD
+        self.min_volume = Config.MIN_VOLUME
         
-    def generate_signal(self, data):
-        """Advanced strategy combining EMA, RSI, and volume"""
-        if len(data) < 21:  # Need enough data points
+    def generate_signal(self, data: List[Dict]) -> Optional[str]:
+        """Simple EMA crossover strategy"""
+        if len(data) < 22:
             return None
             
         df = pd.DataFrame(data)
         
-        # Calculate EMAs
-        df['ema8'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
-        df['ema20'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
-        
-        # Calculate RSI
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(window=self.rsi_period).mean()
-        avg_loss = loss.rolling(window=self.rsi_period).mean()
-        rs = avg_gain / avg_loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        if df['volume'].iloc[-1] < self.min_volume:
+            return None
+            
+        df['ema_short'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
+        df['ema_long'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
         
         current = df.iloc[-1]
         previous = df.iloc[-2]
         
-        # Bullish confirmation (EMA8 > EMA20 and RSI > 50)
-        if (current['ema8'] > current['ema20'] and 
-            current['rsi'] > 50 and 
-            previous['rsi'] <= 50):
+        if (previous['ema_short'] <= previous['ema_long']) and (current['ema_short'] > current['ema_long']):
             return 'BUY'
-            
-        # Bearish confirmation (EMA8 < EMA20 and RSI < 50)
-        elif (current['ema8'] < current['ema20'] and 
-              current['rsi'] < 50 and 
-              previous['rsi'] >= 50):
+        elif (previous['ema_short'] >= previous['ema_long']) and (current['ema_short'] < current['ema_long']):
             return 'SELL'
             
         return None
