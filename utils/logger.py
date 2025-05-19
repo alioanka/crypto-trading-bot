@@ -113,28 +113,28 @@ class TradeLogger:
         logger.error(f"Logging error: {event_type} - {details}")
         self._write_entry(entry)
 
-def log_system(
-    self,
-    event_type: str,
-    details: Dict[str, Any]
-) -> None:
-    """Log a system event with safe handling of symbols"""
-    try:
-        # Safely handle the symbols field
-        symbols = details.get('symbols', [])
-        if not isinstance(symbols, list):
-            symbols = []
-            
-        entry = {
-            'timestamp': datetime.now().isoformat(),
-            'event_type': event_type,
-            'details': json.dumps(details),
-            'symbols': ','.join(str(s) for s in symbols) if symbols else None
-        }
-        logger.info(f"Logging system event: {event_type}")
-        self._write_entry(entry)
-    except Exception as e:
-        logger.error(f"Failed to log system event: {e}")
+    def log_system(
+        self,
+        event_type: str,
+        details: Dict[str, Any]
+    ) -> None:
+        """Log a system event with safe handling"""
+        try:
+            # Safely handle the symbols field
+            symbols = details.get('symbols', [])
+            if not isinstance(symbols, (list, tuple)):
+                symbols = []
+                
+            entry = {
+                'timestamp': datetime.now().isoformat(),
+                'event_type': event_type,
+                'details': json.dumps(details),
+                'symbols': ','.join(str(s) for s in symbols) if symbols else None
+            }
+            logger.info(f"Logging system event: {event_type}")
+            self._write_entry(entry)
+        except Exception as e:
+            logger.error(f"Failed to log system event: {e}")
 
     def _write_entry(self, entry: Dict[str, Any]) -> None:
         """Write entry to log file with rotation check"""
