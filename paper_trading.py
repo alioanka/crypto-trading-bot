@@ -1,8 +1,16 @@
 import random
 import time
+import logging
 from datetime import datetime
 from main import TradingBot
 from utils.logger import TradeLogger
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class PaperTradingBot(TradingBot):
     def __init__(self):
@@ -11,6 +19,7 @@ class PaperTradingBot(TradingBot):
         self.positions = {}
         self.logger = TradeLogger()
         self.logger.log_trade("Paper trading initialized with $1000 balance")
+        logger.info("Paper trading bot initialized")
 
     def simulate_market_data(self, symbol):
         """Generate realistic fake market data"""
@@ -41,11 +50,13 @@ class PaperTradingBot(TradingBot):
             f"[PAPER] {side} {quantity:.4f} {symbol} at ${price:.2f} | "
             f"Balance: ${self.balance:.2f}"
         )
+        logger.info(f"Paper trade executed: {side} {quantity} {symbol} @ {price}")
         return {'price': price, 'quantity': quantity}
 
     def run(self):
         """Run continuous paper trading simulation"""
         self.logger.log_trade("Starting paper trading session")
+        logger.info("Starting paper trading simulation")
         
         symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         
@@ -64,6 +75,7 @@ class PaperTradingBot(TradingBot):
                 
             except KeyboardInterrupt:
                 self.logger.log_trade("Paper trading session ended")
+                logger.info("Paper trading session ended")
                 break
 
 if __name__ == "__main__":

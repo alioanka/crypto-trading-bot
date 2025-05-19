@@ -1,6 +1,7 @@
 import os
 import time
 import math
+import logging
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -11,6 +12,13 @@ from utils.logger import TradeLogger
 from utils.alerts import AlertSystem
 from utils.backup_manager import BackupManager
 from utils.config import Config
+
+# Configure logging
+logging.basicConfig(
+    level=Config.LOG_LEVEL,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class TradingBot:
     def __init__(self):
@@ -52,6 +60,8 @@ class TradingBot:
         self.historical_data = {}
         self.account_balance = 0.0
         self.open_positions = {}
+        self.start_time = datetime.now()
+        self.trading_fee = 0.001  # 0.1% trading fee
 
         # Initialize
         self._print_configuration()
@@ -61,8 +71,8 @@ class TradingBot:
     def _validate_interval(self, interval: str) -> str:
         valid_intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
         if interval not in valid_intervals:
-            print(f"⚠️ Invalid interval. Defaulting to 4h")
-            return "4h"
+            logger.warning(f"Invalid interval {interval}. Defaulting to 1h")
+            return "1h"
         return interval
 
     def _get_update_interval(self) -> int:
@@ -78,48 +88,35 @@ class TradingBot:
         return interval_map.get(self.candle_interval, 3600)
 
     def _print_configuration(self):
-        print("\n" + "="*50)
-        print(f"⚙️ TRADING CONFIGURATION")
-        print("="*50)
-        print(f"• Strategy: {Config.STRATEGY}")
-        print(f"• Timeframe: {self.candle_interval} candles")
-        print(f"• Max Trades/Day: {Config.MAX_DAILY_TRADES}")
-        print(f"• Risk/Trade: {Config.RISK_PER_TRADE*100}%")
-        print(f"• Min Notional: ${Config.MIN_NOTIONAL}")
-        print(f"• Trading Pairs: {len(self.symbols)}")
-        print("="*50 + "\n")
+        logger.info("\n" + "="*50)
+        logger.info(f"⚙️ TRADING CONFIGURATION")
+        logger.info("="*50)
+        logger.info(f"• Strategy: {Config.STRATEGY}")
+        logger.info(f"• Timeframe: {self.candle_interval} candles")
+        logger.info(f"• Max Trades/Day: {Config.MAX_DAILY_TRADES}")
+        logger.info(f"• Risk/Trade: {Config.RISK_PER_TRADE*100}%")
+        logger.info(f"• Min Notional: ${Config.MIN_NOTIONAL}")
+        logger.info(f"• Trading Pairs: {len(self.symbols)}")
+        logger.info("="*50 + "\n")
 
     def _get_approved_symbols(self) -> List[str]:
         approved = []
         for symbol in self.exchange.STABLE_PAIRS:
-            if self._is_symbol_tradable(symbol):
-                approved.append(symbol)
-                print(f"✅ Approved: {symbol}")
-            else:
-                print(f"⏭️ Skipped: {symbol}")
+            try:
+                # Check if symbol is available by getting price
+                price = self.exchange.get_price(symbol)
+                if price is not None:
+                    approved.append(symbol)
+                    logger.info(f"✅ Approved: {symbol}")
+                else:
+                    logger.warning(f"⏭️ Skipped: {symbol} - Price check failed")
+            except Exception as e:
+                logger.error(f"Error checking {symbol}: {str(e)}")
+                logger.warning(f"⏭️ Skipped: {symbol}")
         return approved
 
-    def _is_symbol_tradable(self, symbol: str) -> bool:
-        """Simplified symbol check focusing on availability"""
-        try:
-            # Basic availability check
-            ticker = self.exchange.get_ticker(symbol)
-            if not ticker:
-                return False
-                
-            # Check if we can get market info (uses fallbacks if API fails)
-            market_info = self.exchange.get_market_info(symbol)
-            if not market_info:
-                return False
-                
-            return True
-            
-        except Exception as e:
-            print(f"Error checking {symbol}: {str(e)}")
-            return False
-
     def _load_all_historical_data(self):
-        print("\n🔄 Loading historical data...")
+        logger.info("\n🔄 Loading historical data...")
         for symbol in self.symbols:
             self._load_historical_data(symbol)
 
@@ -130,7 +127,7 @@ class TradingBot:
                 df = pd.read_csv(data_file)
                 df = df.sort_values('time')
                 self.historical_data[symbol] = df
-                print(f"📊 Loaded {len(df)} {self.candle_interval} candles for {symbol}")
+                logger.info(f"📊 Loaded {len(df)} {self.candle_interval} candles for {symbol}")
             else:
                 data = self.exchange.get_klines(symbol, self.candle_interval)
                 if data:
@@ -138,7 +135,7 @@ class TradingBot:
                     df = df.sort_values('time')
                     df.to_csv(data_file, index=False)
                     self.historical_data[symbol] = df
-                    print(f"📊 Downloaded {len(df)} candles for {symbol}")
+                    logger.info(f"📊 Downloaded {len(df)} candles for {symbol}")
         except Exception as e:
             self.logger.log_error(
                 event_type="DATA_LOAD",
@@ -159,14 +156,22 @@ class TradingBot:
         self.alerts.bot_started("3.5", self.symbols)
 
     def run(self):
-        print(f"\n🚀 Trading Bot Active ({self.candle_interval} timeframe)")
-        print(f"📊 Monitoring {len(self.symbols)} pairs")
-        print(f"📈 Strategy: {Config.STRATEGY}")
-        print("⏳ Press Ctrl+C to stop\n")
+        logger.info(f"\n🚀 Trading Bot Active ({self.candle_interval} timeframe)")
+        logger.info(f"📊 Monitoring {len(self.symbols)} pairs")
+        logger.info(f"📈 Strategy: {Config.STRATEGY}")
+        logger.info("⏳ Press Ctrl+C to stop\n")
+        
+        # Add heartbeat counter
+        heartbeat_count = 0
         
         try:
             while True:
                 cycle_start = time.time()
+                heartbeat_count += 1
+                
+                # Send heartbeat every 12 cycles (approx hourly for 5m interval)
+                if heartbeat_count % 12 == 0:
+                    self._send_heartbeat()
                 
                 # Refresh account state
                 self._update_account_state()
@@ -182,18 +187,38 @@ class TradingBot:
                 sleep_time = max(5, self.update_interval - elapsed)
                 
                 # Visual countdown
-                print(f"\n⏳ Next analysis in {sleep_time:.0f}s [", end="", flush=True)
-                for _ in range(int(sleep_time)):
-                    print("#", end="", flush=True)
-                    time.sleep(1)
-                print("]")
+                logger.info(f"\n⏳ Next analysis in {sleep_time:.0f}s [{'#' * int(sleep_time)}]")
+                time.sleep(sleep_time)
 
         except KeyboardInterrupt:
-            print("\n🛑 Received shutdown signal...")
+            logger.info("\n🛑 Received shutdown signal...")
             self._shutdown("Manual shutdown")
         except Exception as e:
             self._shutdown(f"Crash: {str(e)}", is_error=True)
             raise
+
+    def _send_heartbeat(self):
+        """Send periodic status update"""
+        status = {
+            "uptime": str(datetime.now() - self.start_time),
+            "symbols": len(self.symbols),
+            "positions": len(self.open_positions),
+            "balance": self.account_balance,
+            "last_trades": list(self.last_trade_time.keys()),
+            "risk_metrics": self.risk.get_risk_metrics()
+        }
+        
+        message = (
+            f"<b>💓 BOT HEARTBEAT</b>\n"
+            f"• Uptime: {status['uptime']}\n"
+            f"• Monitoring: {status['symbols']} pairs\n"
+            f"• Positions: {status['positions']}\n"
+            f"• Balance: ${status['balance']:.2f}\n"
+            f"• Daily Trades: {status['risk_metrics']['daily_trades']}/{status['risk_metrics']['max_daily_trades']}"
+        )
+        
+        self.alerts._send_alert(message, "SYSTEM")
+        self.logger.log_system("HEARTBEAT", status)
 
     def _update_account_state(self):
         self.account_balance = self._get_usdt_balance()
@@ -202,20 +227,20 @@ class TradingBot:
 
     def _log_account_state(self):
         if self.open_positions:
-            print("\n📊 OPEN POSITIONS:")
+            logger.info("\n📊 OPEN POSITIONS:")
             for symbol, position in self.open_positions.items():
-                print(f"• {symbol}: {position['side']} {position['quantity']} @ {position['entry_price']}")
+                logger.info(f"• {symbol}: {position['side']} {position['quantity']} @ {position['entry_price']}")
         else:
-            print("\n📊 No open positions")
+            logger.info("\n📊 No open positions")
 
     def _get_usdt_balance(self) -> float:
         balances = self.exchange.get_account_balance()
         usdt = balances.get('USDT', 0.0)
-        print(f"\n💵 Account Balance: {usdt:.2f} USDT")
+        logger.info(f"\n💵 Account Balance: {usdt:.2f} USDT")
         return usdt
 
     def _update_market_data(self):
-        print("\n🔄 Updating market data...")
+        logger.info("\n🔄 Updating market data...")
         for symbol in self.symbols:
             new_data = self.exchange.get_klines(symbol, self.candle_interval)
             if new_data:
@@ -236,7 +261,7 @@ class TradingBot:
                 df.to_csv(data_file, index=False)
             
             self.historical_data[symbol] = df.tail(100)
-            print(f"📈 Updated {symbol} data ({len(df)} candles)")
+            logger.info(f"📈 Updated {symbol} data ({len(df)} candles)")
         except Exception as e:
             self.logger.log_error(
                 event_type="DATA_UPDATE",
@@ -245,22 +270,25 @@ class TradingBot:
             )
 
     def _run_strategies(self):
-        print("\n🔍 Analyzing markets...")
+        logger.info("\n🔍 Analyzing markets...")
         for symbol in self.symbols:
             try:
                 # Skip if traded recently
                 if symbol in self.last_trade_time:
                     if time.time() - self.last_trade_time[symbol] < 86400:
+                        logger.debug(f"Skipping {symbol} - traded recently")
                         continue
 
                 # Get and validate data
                 data = self.historical_data.get(symbol)
                 if data is None or len(data) < 20:
+                    logger.warning(f"Insufficient data for {symbol}")
                     continue
 
                 # Generate signal
                 signal = self.strategy.generate_signal(data.to_dict('records'))
                 if signal:
+                    logger.info(f"Signal generated for {symbol}: {signal}")
                     if signal == 'BUY' and symbol not in self.open_positions:
                         if self.risk.can_trade():
                             self._execute_trade(symbol, signal)
@@ -274,7 +302,7 @@ class TradingBot:
                 )
 
     def _execute_trade(self, symbol: str, signal: str):
-        print(f"\n⚡ Attempting {signal} for {symbol}...")
+        logger.info(f"\n⚡ Attempting {signal} for {symbol}...")
         
         try:
             # Get current price and market info
@@ -286,22 +314,48 @@ class TradingBot:
             min_qty = market_info['minQty']
             step_size = market_info['stepSize']
             min_notional = market_info['minNotional']
+            base_asset = market_info['baseAsset']
+            precision = int(round(-math.log(step_size, 10)))
 
             # Calculate quantity with precision
             if signal == 'BUY':
                 risk_amount = self.account_balance * Config.RISK_PER_TRADE
                 quantity = risk_amount / price
+                
+                # Round DOWN to step size
+                quantity = math.floor(quantity * 10**precision) / 10**precision
+                
+                # Ensure we meet minimum quantity
+                if quantity < min_qty:
+                    logger.info(f"Adjusting quantity to minimum: {min_qty}")
+                    quantity = min_qty
             else:  # SELL
-                quantity = self.open_positions[symbol]['quantity']
+                # Get available balance and adjust for fees
+                position = self.open_positions.get(symbol)
+                if not position:
+                    raise ValueError(f"No open position found for {symbol}")
+                    
+                available = position['quantity']
+                
+                # Calculate maximum sellable quantity (accounting for fees)
+                quantity = available * (1 - self.trading_fee)
+                
+                # Round DOWN to step size to ensure we don't exceed available balance
+                quantity = math.floor(quantity * 10**precision) / 10**precision
+                
+                # Ensure we meet minimum quantity
+                if quantity < min_qty:
+                    # Try to sell entire position if it's below minimum
+                    if available >= min_qty:
+                        quantity = min_qty
+                    else:
+                        logger.info(f"Attempting to sell small position: {available}")
+                        quantity = available
 
-            # Round to step size
-            precision = int(round(-math.log(step_size, 10)))
-            quantity = round(quantity, precision)
+            # Final validation
             notional = quantity * price
-
-            # Validate against exchange requirements
-            if quantity < min_qty:
-                raise ValueError(f"Quantity too small. Min: {min_qty}, Attempted: {quantity}")
+            if quantity <= 0:
+                raise ValueError(f"Invalid quantity: {quantity}")
             if notional < min_notional:
                 raise ValueError(f"Notional too small. Min: {min_notional}, Attempted: {notional:.2f}")
 
@@ -331,7 +385,7 @@ class TradingBot:
             executed_price = float(order['fills'][0]['price'])
             notional = executed_qty * executed_price
             
-            print(f"✅ Success: {executed_qty} {symbol} @ {executed_price} (${notional:.2f})")
+            logger.info(f"✅ Success: {executed_qty} {symbol} @ {executed_price} (${notional:.2f})")
             
             self.logger.log_trade(
                 symbol=symbol,
@@ -344,7 +398,7 @@ class TradingBot:
 
         except Exception as e:
             error_msg = f"{symbol} {signal} failed: {str(e)}"
-            print(f"❌ {error_msg}")
+            logger.error(f"❌ {error_msg}")
             self.logger.log_error(
                 event_type="TRADE_ERROR",
                 symbol=symbol,
@@ -365,7 +419,7 @@ class TradingBot:
             details={"reason": reason, "is_error": is_error}
         )
         self._save_last_trade_times()
-        print("\n=== Trading Bot Stopped ===")
+        logger.info("\n=== Trading Bot Stopped ===")
 
 if __name__ == "__main__":
     # Validate configuration

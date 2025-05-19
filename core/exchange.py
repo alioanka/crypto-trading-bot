@@ -1,10 +1,15 @@
 import math
 import time
+import logging
 from decimal import Decimal, getcontext
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from typing import Dict, Optional, List, Union, Tuple
 from utils.config import Config
+from utils.alerts import AlertSystem
+
+logger = logging.getLogger(__name__)
+alerts = AlertSystem()
 
 class BinanceAPI:
     STABLE_PAIRS = [
@@ -13,7 +18,6 @@ class BinanceAPI:
         'MATICUSDT', 'LTCUSDT'
     ]
 
-    # Default values for major pairs
     DEFAULT_VALUES = {
         'BTCUSDT': {'minQty': 0.00001, 'stepSize': 0.00001, 'minNotional': 10},
         'ETHUSDT': {'minQty': 0.001, 'stepSize': 0.001, 'minNotional': 10},
@@ -37,22 +41,30 @@ class BinanceAPI:
         self.retry_delay = 5
         self.symbol_rules = {}
         self.market_info = {}
+        logger.info("BinanceAPI initialized")
 
-    def get_ticker(self, symbol: str) -> Optional[Dict]:
-        """Get ticker data with retries"""
-        for _ in range(3):
+    def get_price(self, symbol: str) -> Optional[float]:
+        """Get current price with enhanced error handling"""
+        for attempt in range(3):
             try:
-                return self.client.get_ticker(symbol=symbol)
+                ticker = self.client.get_ticker(symbol=symbol)
+                price = float(ticker['lastPrice'])
+                logger.debug(f"Got price for {symbol}: {price}")
+                return price
             except BinanceAPIException as e:
-                print(f"Ticker error for {symbol}: {e}")
+                error_msg = f"Price API error for {symbol} (attempt {attempt+1}): {e}"
+                logger.error(error_msg)
+                alerts.error_alert("PRICE_FETCH", error_msg, symbol)
                 time.sleep(self.retry_delay)
             except Exception as e:
-                print(f"Unexpected ticker error: {e}")
+                error_msg = f"Unexpected price error for {symbol}: {e}"
+                logger.error(error_msg)
+                alerts.error_alert("PRICE_FETCH", error_msg, symbol)
                 time.sleep(self.retry_delay)
         return None
 
     def get_market_info(self, symbol: str) -> Dict:
-        """Get market information with ultimate fallback"""
+        """Get market information with detailed logging"""
         if symbol not in self.market_info:
             try:
                 info = self.client.get_symbol_info(symbol)
@@ -68,9 +80,12 @@ class BinanceAPI:
                         'baseAsset': info.get('baseAsset', symbol.replace('USDT', '')),
                         'quoteAsset': info.get('quoteAsset', 'USDT')
                     }
+                    logger.info(f"Loaded market info for {symbol}: {self.market_info[symbol]}")
                     return self.market_info[symbol]
             except Exception as e:
-                print(f"API error for {symbol}, using defaults: {str(e)}")
+                error_msg = f"API error for {symbol}, using defaults: {str(e)}"
+                logger.warning(error_msg)
+                alerts.error_alert("MARKET_INFO", error_msg, symbol)
 
             # Fallback to defaults
             self.market_info[symbol] = self.DEFAULT_VALUES.get(symbol, {
@@ -80,24 +95,31 @@ class BinanceAPI:
                 'baseAsset': symbol.replace('USDT', ''),
                 'quoteAsset': 'USDT'
             })
+            logger.warning(f"Using fallback market info for {symbol}")
 
         return self.market_info[symbol]
 
     def get_account_balance(self) -> Dict[str, float]:
         """Get all non-zero balances with retries"""
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 account = self.client.get_account()
-                return {
+                balances = {
                     asset['asset']: float(asset['free'])
                     for asset in account['balances']
                     if float(asset['free']) > 0.0001
                 }
+                logger.debug(f"Account balances: {balances}")
+                return balances
             except BinanceAPIException as e:
-                print(f"Balance error: {e}. Retrying...")
+                error_msg = f"Balance error (attempt {attempt+1}): {e}"
+                logger.error(error_msg)
+                alerts.error_alert("BALANCE_FETCH", error_msg)
                 time.sleep(self.retry_delay)
             except Exception as e:
-                print(f"Unexpected balance error: {e}")
+                error_msg = f"Unexpected balance error: {e}"
+                logger.error(error_msg)
+                alerts.error_alert("BALANCE_FETCH", error_msg)
                 time.sleep(self.retry_delay)
         return {}
 
@@ -116,10 +138,15 @@ class BinanceAPI:
                             'entry_price': self.get_average_entry_price(symbol),
                             'side': 'BUY'
                         }
+                        logger.info(f"Open position found: {symbol} - {positions[symbol]}")
                 except Exception as e:
-                    print(f"Error processing {symbol} position: {e}")
+                    error_msg = f"Error processing {symbol} position: {e}"
+                    logger.error(error_msg)
+                    alerts.error_alert("POSITION_ERROR", error_msg, symbol)
         except Exception as e:
-            print(f"Error getting positions: {e}")
+            error_msg = f"Error getting positions: {e}"
+            logger.error(error_msg)
+            alerts.error_alert("POSITION_ERROR", error_msg)
         return positions
 
     def get_average_entry_price(self, symbol: str) -> float:
@@ -128,13 +155,18 @@ class BinanceAPI:
             trades = self.client.get_my_trades(symbol=symbol, limit=10)
             buy_trades = [t for t in trades if t['isBuyer']]
             if not buy_trades:
+                logger.warning(f"No buy trades found for {symbol}")
                 return 0.0
                 
             total_cost = sum(float(t['quoteQty']) for t in buy_trades)
             total_amount = sum(float(t['qty']) for t in buy_trades)
-            return total_cost / total_amount
+            avg_price = total_cost / total_amount
+            logger.debug(f"Calculated avg entry price for {symbol}: {avg_price}")
+            return avg_price
         except Exception as e:
-            print(f"Error calculating entry price: {e}")
+            error_msg = f"Error calculating entry price: {e}"
+            logger.error(error_msg)
+            alerts.error_alert("PRICE_CALCULATION", error_msg, symbol)
             return 0.0
 
     def get_klines(self, symbol: str, interval: str = None) -> Optional[List[Dict]]:
@@ -143,17 +175,19 @@ class BinanceAPI:
         interval = interval or Config.CANDLE_INTERVAL
         
         if interval not in valid_intervals:
-            print(f"⚠️ Invalid interval {interval}. Using 1h")
+            error_msg = f"Invalid interval {interval}. Using 1h"
+            logger.warning(error_msg)
+            alerts.error_alert("CONFIG_ERROR", error_msg)
             interval = '1h'
 
-        for _ in range(3):
+        for attempt in range(3):
             try:
                 klines = self.client.get_klines(
                     symbol=symbol,
                     interval=interval,
                     limit=100
                 )
-                return [{
+                formatted = [{
                     'time': k[0],
                     'open': float(k[1]),
                     'high': float(k[2]),
@@ -161,18 +195,26 @@ class BinanceAPI:
                     'close': float(k[4]),
                     'volume': float(k[5])
                 } for k in klines]
+                logger.debug(f"Retrieved {len(formatted)} {interval} candles for {symbol}")
+                return formatted
             except Exception as e:
-                print(f"Klines error for {symbol}: {e}")
+                error_msg = f"Klines error for {symbol} (attempt {attempt+1}): {e}"
+                logger.error(error_msg)
+                if attempt == 2:
+                    alerts.error_alert("KLINES_ERROR", error_msg, symbol)
                 time.sleep(self.retry_delay)
         return None
 
     def execute_order(self, symbol: str, side: str, quantity: float) -> Union[Dict, None]:
-        """Safe order execution with full validation"""
+        """Safe order execution with comprehensive logging"""
         try:
             market_info = self.get_market_info(symbol)
-            price = float(self.client.get_ticker(symbol=symbol)['lastPrice'])
+            price = self.get_price(symbol)
             
             if not price or price <= 0:
+                error_msg = f"Invalid price for {symbol}: {price}"
+                logger.error(error_msg)
+                alerts.error_alert("ORDER_ERROR", error_msg, symbol)
                 return None
 
             # Calculate precision
@@ -184,30 +226,40 @@ class BinanceAPI:
             valid_quantity = float(quantity_dec)
             notional = valid_quantity * price
 
+            logger.debug(f"Order validation - Symbol: {symbol}, Side: {side}, "
+                        f"Qty: {valid_quantity}, Price: {price}, Notional: {notional}")
+
             if valid_quantity < market_info['minQty']:
-                print(f"❌ Quantity below minimum for {symbol}: {valid_quantity} < {market_info['minQty']}")
+                error_msg = f"Quantity below minimum for {symbol}: {valid_quantity} < {market_info['minQty']}"
+                logger.error(error_msg)
+                alerts.error_alert("ORDER_ERROR", error_msg, symbol)
                 return None
                 
             if notional < market_info['minNotional']:
-                print(f"❌ Notional below minimum for {symbol}: ${notional:.2f} < ${market_info['minNotional']:.2f}")
+                error_msg = f"Notional below minimum for {symbol}: ${notional:.2f} < ${market_info['minNotional']:.2f}"
+                logger.error(error_msg)
+                alerts.error_alert("ORDER_ERROR", error_msg, symbol)
                 return None
 
-            return self.client.create_order(
+            logger.info(f"Attempting {side} order for {symbol}: {valid_quantity} @ ~{price}")
+            order = self.client.create_order(
                 symbol=symbol,
                 side=side,
                 type=Client.ORDER_TYPE_MARKET,
                 quantity=valid_quantity
             )
+            
+            logger.info(f"Order executed: {order}")
+            alerts.trade_executed(symbol, side, price, valid_quantity)
+            return order
+            
         except BinanceAPIException as e:
-            print(f"API Error: {e.status_code} {e.message}")
+            error_msg = f"API Error: {e.status_code} {e.message}"
+            logger.error(error_msg)
+            alerts.error_alert("API_ERROR", error_msg, symbol)
             return None
         except Exception as e:
-            print(f"Order Error: {str(e)}")
-            return None
-    
-    def get_price(self, symbol: str) -> Optional[float]:
-        """Get the current market price for a symbol"""
-        ticker = self.get_ticker(symbol)
-        if ticker and 'lastPrice' in ticker:
-            return float(ticker['lastPrice'])
+            error_msg = f"Order Error: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            alerts.error_alert("ORDER_ERROR", error_msg, symbol)
             return None

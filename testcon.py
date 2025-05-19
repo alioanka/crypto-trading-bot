@@ -1,6 +1,14 @@
+import time
+import logging
 from core.exchange import BinanceAPI
 from utils.config import Config
-import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def test_connection():
     print("Testing Binance API connection...")
@@ -42,6 +50,6 @@ if __name__ == "__main__":
     try:
         test_connection()
     except Exception as e:
-        print(f"❌ Critical test failure: {e}")
+        logger.error(f"❌ Critical test failure: {e}")
     finally:
         time.sleep(1)

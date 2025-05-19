@@ -1,8 +1,11 @@
 import os
+import logging
 from dotenv import load_dotenv
 from typing import List
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class Config:
     # Binance API Configuration
@@ -53,3 +56,11 @@ class Config:
     DATA_DIR = os.getenv("DATA_DIR", "data")
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
     REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 10))
+
+# Validate critical configuration
+if not all([Config.BINANCE_API_KEY, Config.BINANCE_API_SECRET]):
+    logger.error("Missing Binance API credentials in configuration")
+    raise ValueError("Binance API credentials not configured")
+
+if not all([Config.TELEGRAM_TOKEN, Config.TELEGRAM_CHAT_ID]):
+    logger.warning("Telegram alerts not fully configured - alerts will be logged only")

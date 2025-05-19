@@ -2,9 +2,12 @@ import os
 import csv
 import json
 import gzip
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from utils.config import Config
+
+logger = logging.getLogger(__name__)
 
 class TradeLogger:
     def __init__(self, log_dir: str = os.path.join(Config.DATA_DIR, "logs")):
@@ -14,6 +17,7 @@ class TradeLogger:
         self.current_log = os.path.join(log_dir, "trades.csv")
         self._init_log_file()
         self._cleanup_old_logs()
+        logger.info(f"TradeLogger initialized - storing logs in {log_dir}")
 
     def _init_log_file(self):
         """Initialize CSV file with headers if needed"""
@@ -38,7 +42,11 @@ class TradeLogger:
                 filepath = os.path.join(self.log_dir, filename)
                 file_time = datetime.fromtimestamp(os.path.getmtime(filepath))
                 if file_time < cutoff:
-                    os.remove(filepath)
+                    try:
+                        os.remove(filepath)
+                        logger.debug(f"Removed old log file: {filename}")
+                    except Exception as e:
+                        logger.error(f"Failed to remove old log {filename}: {e}")
 
     def _rotate_logs(self):
         """Rotate and compress log file if it gets too large"""
@@ -46,14 +54,18 @@ class TradeLogger:
             rotated_name = f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv.gz"
             rotated_path = os.path.join(self.log_dir, rotated_name)
             
-            # Compress current log
-            with open(self.current_log, 'rb') as f_in:
-                with gzip.open(rotated_path, 'wb') as f_out:
-                    f_out.writelines(f_in)
-            
-            # Start new log file
-            os.remove(self.current_log)
-            self._init_log_file()
+            try:
+                # Compress current log
+                with open(self.current_log, 'rb') as f_in:
+                    with gzip.open(rotated_path, 'wb') as f_out:
+                        f_out.writelines(f_in)
+                
+                # Start new log file
+                os.remove(self.current_log)
+                self._init_log_file()
+                logger.info(f"Rotated log file to {rotated_name}")
+            except Exception as e:
+                logger.error(f"Log rotation failed: {e}")
 
     def log_trade(
         self,
@@ -76,6 +88,7 @@ class TradeLogger:
             'interval': Config.CANDLE_INTERVAL,
             'details': details
         }
+        logger.info(f"Logging trade: {symbol} {side} {quantity} @ {price}")
         self._write_entry(entry)
 
     def log_error(
@@ -97,6 +110,7 @@ class TradeLogger:
             'error': error,
             'stack_trace': stack_trace
         }
+        logger.error(f"Logging error: {event_type} - {details}")
         self._write_entry(entry)
 
     def log_system(
@@ -111,6 +125,7 @@ class TradeLogger:
             'details': json.dumps(details),
             'symbols': ','.join(details.get('symbols', [])) if 'symbols' in details else None
         }
+        logger.info(f"Logging system event: {event_type}")
         self._write_entry(entry)
 
     def _write_entry(self, entry: Dict[str, Any]) -> None:
@@ -121,7 +136,7 @@ class TradeLogger:
                 writer = csv.DictWriter(f, fieldnames=self._get_fieldnames())
                 writer.writerow(entry)
         except Exception as e:
-            print(f"Failed to write log entry: {e}")
+            logger.error(f"Failed to write log entry: {e}")
 
     def get_recent_events(self, limit: int = 10) -> List[Dict]:
         """Get last N log entries for debugging"""
@@ -131,5 +146,5 @@ class TradeLogger:
         except FileNotFoundError:
             return []
         except Exception as e:
-            print(f"Error reading log file: {e}")
+            logger.error(f"Error reading log file: {e}")
             return []
