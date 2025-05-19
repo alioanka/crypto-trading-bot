@@ -204,3 +204,10 @@ class BinanceAPI:
         except Exception as e:
             print(f"Order Error: {str(e)}")
             return None
+    
+    def get_price(self, symbol: str) -> Optional[float]:
+        """Get the current market price for a symbol"""
+        ticker = self.get_ticker(symbol)
+        if ticker and 'lastPrice' in ticker:
+            return float(ticker['lastPrice'])
+            return None
