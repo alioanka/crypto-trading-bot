@@ -197,28 +197,39 @@ class TradingBot:
             self._shutdown(f"Crash: {str(e)}", is_error=True)
             raise
 
+# ... [previous imports and code remain the same until _send_heartbeat method]
+
     def _send_heartbeat(self):
         """Send periodic status update"""
         status = {
             "uptime": str(datetime.now() - self.start_time),
-            "symbols": len(self.symbols),
+            "symbols": self.symbols if isinstance(self.symbols, list) else [],
             "positions": len(self.open_positions),
             "balance": self.account_balance,
-            "last_trades": list(self.last_trade_time.keys()),
+            "last_trades": list(self.last_trade_time.keys()) if isinstance(self.last_trade_time, dict) else [],
             "risk_metrics": self.risk.get_risk_metrics()
         }
+        
+        # Ensure symbols is always a list for joining
+        symbols_list = status['symbols'] if isinstance(status['symbols'], list) else []
         
         message = (
             f"<b>💓 BOT HEARTBEAT</b>\n"
             f"• Uptime: {status['uptime']}\n"
-            f"• Monitoring: {status['symbols']} pairs\n"
+            f"• Monitoring: {len(symbols_list)} pairs\n"
             f"• Positions: {status['positions']}\n"
             f"• Balance: ${status['balance']:.2f}\n"
             f"• Daily Trades: {status['risk_metrics']['daily_trades']}/{status['risk_metrics']['max_daily_trades']}"
         )
         
         self.alerts._send_alert(message, "SYSTEM")
-        self.logger.log_system("HEARTBEAT", status)
+        
+        # Create a safe copy of status for logging
+        log_status = status.copy()
+        log_status['symbols'] = symbols_list  # Ensure this is a list
+        self.logger.log_system("HEARTBEAT", log_status)
+
+# ... [rest of the code remains the same]
 
     def _update_account_state(self):
         self.account_balance = self._get_usdt_balance()
