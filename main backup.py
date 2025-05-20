@@ -322,34 +322,24 @@ class TradingBot:
                 raise ValueError("Price check failed")
                 
             market_info = self.exchange.get_market_info(symbol)
-            min_qty = float(market_info['minQty'])
-            step_size = float(market_info['stepSize'])
-            min_notional = float(market_info['minNotional'])
+            min_qty = market_info['minQty']
+            step_size = market_info['stepSize']
+            min_notional = market_info['minNotional']
             base_asset = market_info['baseAsset']
             precision = int(round(-math.log(step_size, 10)))
 
             # Calculate quantity with precision
             if signal == 'BUY':
-                # Use 5% of balance or RISK_PER_TRADE, whichever is smaller
-                risk_amount = min(self.account_balance * 0.05,  # Max 5% for test
-                                self.account_balance * Config.RISK_PER_TRADE)
+                risk_amount = self.account_balance * Config.RISK_PER_TRADE
                 quantity = risk_amount / price
                 
-                # Round DOWN to step size to ensure we don't exceed available balance
+                # Round DOWN to step size
                 quantity = math.floor(quantity * 10**precision) / 10**precision
                 
                 # Ensure we meet minimum quantity
                 if quantity < min_qty:
-                    quantity = min_qty
                     logger.info(f"Adjusting quantity to minimum: {min_qty}")
-                
-                # Ensure we meet minimum notional
-                if (quantity * price) < min_notional:
-                    # Calculate minimum quantity needed and round down
-                    min_qty_needed = math.ceil((min_notional / price) * 10**precision) / 10**precision
-                    quantity = max(min_qty_needed, min_qty)
-                    logger.info(f"Adjusting to meet minimum notional: {quantity} {symbol}")
-
+                    quantity = min_qty
             else:  # SELL
                 # Get available balance and adjust for fees
                 position = self.open_positions.get(symbol)
@@ -442,87 +432,6 @@ class TradingBot:
         self._save_last_trade_times()
         logger.info("\n=== Trading Bot Stopped ===")
 
-    # Add these methods to your TradingBot class in main.py
-
-    def _send_enhanced_heartbeat(self):
-        """Enhanced heartbeat with strategy diagnostics"""
-        status = {
-            "uptime": str(datetime.now() - self.start_time),
-            "symbols": len(self.symbols),
-            "positions": len(self.open_positions),
-            "balance": self.account_balance,
-            "daily_trades": f"{self.risk.daily_trades}/{Config.MAX_DAILY_TRADES}",
-            "data_quality": self.strategy.get_data_quality_report(),
-            "last_signals": list(self.last_trade_time.keys())[-5:]
-        }
-        
-        # Prepare message with markdown formatting
-        message = (
-            f"<b>💓 ENHANCED HEARTBEAT</b>\n"
-            f"• Uptime: <code>{status['uptime']}</code>\n"
-            f"• Monitoring: <code>{status['symbols']}</code> pairs\n"
-            f"• Positions: <code>{status['positions']}</code>\n"
-            f"• Balance: <code>${status['balance']:.2f}</code>\n"
-            f"• Trades Today: <code>{status['daily_trades']}</code>\n"
-            f"• Data Issues: <code>{status['data_quality']['total_issues']}</code>\n"
-            f"• Last Signals: <code>{', '.join(status['last_signals'])}</code>"
-        )
-        
-        self.alerts._send_alert(message, "SYSTEM")
-        self.logger.log_system("HEARTBEAT", status)
-
-    def force_test_signal(self, symbol: str, signal: str):
-        """Force a test signal for a specific symbol"""
-        if not hasattr(self.strategy, 'force_test_signal'):
-            logger.error("Current strategy doesn't support test signals")
-            return
-            
-        if symbol not in self.symbols:
-            logger.error(f"Symbol {symbol} not in monitored pairs")
-            return
-            
-        self.strategy.force_test_signal(signal)
-        logger.info(f"Test signal {signal} set for {symbol} - will trigger on next analysis")
-        
-        # Immediately process this symbol
-        data = self.historical_data.get(symbol)
-        if data is not None:
-            signal = self.strategy.generate_signal(data.to_dict('records'))
-            if signal:
-                self._execute_trade(symbol, signal)
-                
-    def _run_strategies(self):
-        logger.info("\n🔍 Analyzing markets...")
-        for symbol in self.symbols:
-            try:
-                # Skip if traded recently
-                if symbol in self.last_trade_time:
-                    if time.time() - self.last_trade_time[symbol] < 86400:
-                        logger.debug(f"Skipping {symbol} - traded recently")
-                        continue
-
-                # Get and validate data
-                data = self.historical_data.get(symbol)
-                if data is None or len(data) < 20:
-                    logger.warning(f"Insufficient data for {symbol}")
-                    continue
-
-                # Generate signal (with test signal support)
-                signal = self.strategy.generate_signal(data.to_dict('records'))
-                if signal:
-                    logger.info(f"Signal generated for {symbol}: {signal}")
-                    if signal == 'BUY' and symbol not in self.open_positions:
-                        if self.risk.can_trade():
-                            self._execute_trade(symbol, signal)
-                    elif signal == 'SELL' and symbol in self.open_positions:
-                        self._execute_trade(symbol, signal)
-            except Exception as e:
-                self.logger.log_error(
-                    event_type="STRATEGY_ERROR",
-                    symbol=symbol,
-                    details=str(e)
-                )
-
 if __name__ == "__main__":
     # Validate configuration
     required_config = [
@@ -539,12 +448,4 @@ if __name__ == "__main__":
 
     # Start bot
     bot = TradingBot()
-    
-    if os.getenv("ENABLE_TEST_SIGNAL", "False").lower() == "true":
-        bot.force_test_signal("XRPUSDT", "BUY")  # Only runs when explicitly enabled
-    
-    try:
-        bot.run()
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        raise
+    bot.run()

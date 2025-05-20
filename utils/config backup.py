@@ -20,12 +20,12 @@ class Config:
     BACKUP_TO_CLOUD = os.getenv("BACKUP_TO_CLOUD", "False") == "True"
 
     # Trading Parameters
-    CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "5m")  # Changed default to 5m
+    CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "1m")  # 1m, 5m, 15m, 30m, 1h, 4h, 1d
     MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 3))
     
     # Risk Management Parameters
     MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", 0.05))  # 5% max drawdown
-    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.02))  # 1% per trade
+    RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.01))  # 1% per trade
     STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 0.015))  # 1.5%
     TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 0.03))  # 3%
 
@@ -33,32 +33,20 @@ class Config:
     STRATEGY = os.getenv("STRATEGY", "SmartTrend")  # SmartTrend or EMACross
     
     # SmartTrend Strategy Parameters
-    SMARTTREND_EMA_SHORT = int(os.getenv("SMARTTREND_EMA_SHORT", 12))  # Widened
-    SMARTTREND_EMA_LONG = int(os.getenv("SMARTTREND_EMA_LONG", 26))    # Widened
+    SMARTTREND_EMA_SHORT = int(os.getenv("SMARTTREND_EMA_SHORT", 8))
+    SMARTTREND_EMA_LONG = int(os.getenv("SMARTTREND_EMA_LONG", 20))
     SMARTTREND_RSI_PERIOD = int(os.getenv("SMARTTREND_RSI_PERIOD", 14))
-    SMARTTREND_RSI_OVERBOUGHT = int(os.getenv("SMARTTREND_RSI_OVERBOUGHT", 65))
-    SMARTTREND_RSI_OVERSOLD = int(os.getenv("SMARTTREND_RSI_OVERSOLD", 35))
+    SMARTTREND_RSI_OVERBOUGHT = int(os.getenv("SMARTTREND_RSI_OVERBOUGHT", 70))
+    SMARTTREND_RSI_OVERSOLD = int(os.getenv("SMARTTREND_RSI_OVERSOLD", 30))
     
     # EMA Cross Strategy Parameters
-    EMA_SHORT_PERIOD = int(os.getenv("EMA_SHORT_PERIOD", 12))  # Widened
-    EMA_LONG_PERIOD = int(os.getenv("EMA_LONG_PERIOD", 26))    # Widened
+    EMA_SHORT_PERIOD = int(os.getenv("EMA_SHORT_PERIOD", 9))
+    EMA_LONG_PERIOD = int(os.getenv("EMA_LONG_PERIOD", 21))
 
     # Market Filters
-    # Market Filters
-    MIN_VOLUME = float(os.getenv("MIN_VOLUME", 10))  # Changed from 1,000,000 to 100
-    VOLUME_CHECK_MODE = os.getenv("VOLUME_CHECK_MODE", "relative")  # 'relative' or 'absolute'
-    MIN_VOLUME_MULTIPLIER = float(os.getenv("MIN_VOLUME_MULTIPLIER", 0.3))  # 50% of average
-
-    # Time Validation
-    TIME_TOLERANCE_PCT = float(os.getenv("TIME_TOLERANCE_PCT", 50))  # 20% tolerance
+    MIN_VOLUME = float(os.getenv("MIN_VOLUME", 10_000_000))  # $10M daily volume
     MAX_VOLATILITY = float(os.getenv("MAX_VOLATILITY", 15))  # 15% daily price change
-    MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", 15))  # $10 minimum order value
-
-    # Debugging and Monitoring
-    DEBUG_MODE = os.getenv("DEBUG_MODE", "False") == "True"
-    HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", 3600))  # 1 hour
-    DATA_QUALITY_CHECKS = os.getenv("DATA_QUALITY_CHECKS", "True") == "True"
-    TELEGRAM_ALERTS = True
+    MIN_NOTIONAL = float(os.getenv("MIN_NOTIONAL", 10))  # $10 minimum order value
 
     # Logging Configuration
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR

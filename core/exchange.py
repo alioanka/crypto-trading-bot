@@ -15,7 +15,7 @@ class BinanceAPI:
     STABLE_PAIRS = [
         'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT',
         'SOLUSDT', 'ADAUSDT', 'DOGEUSDT', 'DOTUSDT',
-        'MATICUSDT', 'LTCUSDT'
+        'AVAXUSDT', 'LTCUSDT'
     ]
 
     DEFAULT_VALUES = {
@@ -43,25 +43,25 @@ class BinanceAPI:
         self.market_info = {}
         logger.info("BinanceAPI initialized")
 
+# In your exchange.py file, update get_price method:
     def get_price(self, symbol: str) -> Optional[float]:
-        """Get current price with enhanced error handling"""
-        for attempt in range(3):
+        """Get current price with better error handling"""
+        try:
+            if symbol == 'MATICUSDT':  # Handle old symbol
+                symbol = 'AVAXUSDT'  # Or whatever it was renamed to
+            
+            ticker = self.client.get_symbol_ticker(symbol=symbol)
+            return float(ticker['price'])
+        except Exception as e:
+            logger.error(f"Price check failed for {symbol}: {str(e)}")
+            # Try alternative endpoints if available
             try:
-                ticker = self.client.get_ticker(symbol=symbol)
-                price = float(ticker['lastPrice'])
-                logger.debug(f"Got price for {symbol}: {price}")
-                return price
-            except BinanceAPIException as e:
-                error_msg = f"Price API error for {symbol} (attempt {attempt+1}): {e}"
-                logger.error(error_msg)
-                alerts.error_alert("PRICE_FETCH", error_msg, symbol)
-                time.sleep(self.retry_delay)
-            except Exception as e:
-                error_msg = f"Unexpected price error for {symbol}: {e}"
-                logger.error(error_msg)
-                alerts.error_alert("PRICE_FETCH", error_msg, symbol)
-                time.sleep(self.retry_delay)
-        return None
+                klines = self.client.get_klines(symbol=symbol, interval='1m', limit=1)
+                if klines:
+                    return float(klines[0][4])  # Use close price
+            except:
+                pass
+            return None
 
     def get_market_info(self, symbol: str) -> Dict:
         """Get market information with detailed logging"""
