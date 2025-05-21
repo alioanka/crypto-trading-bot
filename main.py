@@ -2,6 +2,7 @@ import os
 import time
 import math
 import logging
+import traceback  # Add this import at the top of your main.py
 import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -197,7 +198,39 @@ class TradingBot:
             self._shutdown(f"Crash: {str(e)}", is_error=True)
             raise
 
-# ... [previous imports and code remain the same until _send_heartbeat method]
+    # ... [previous imports and code remain the same until _send_heartbeat method]
+    def _check_position_limits(self, symbol: str) -> bool:
+        """Check if position should be closed due to stop loss/take profit"""
+        if symbol not in self.open_positions:
+            return False
+            
+        position = self.open_positions[symbol]
+        current_price = self.exchange.get_price(symbol)
+        if not current_price:
+            return False
+            
+        entry = position['entry_price']
+        is_long = position['side'] == 'BUY'
+        
+        # Calculate current PnL
+        if is_long:
+            pnl_pct = (current_price - entry) / entry * 100
+        else:
+            pnl_pct = (entry - current_price) / entry * 100
+        
+        # Check stop loss
+        if pnl_pct <= -abs(Config.STOP_LOSS_PCT):
+            logger.info(f"🛑 STOP LOSS triggered for {symbol} at {current_price} ({pnl_pct:.2f}%)")
+            self._execute_trade(symbol, 'SELL')
+            return True
+            
+        # Check take profit
+        if pnl_pct >= abs(Config.TAKE_PROFIT_PCT):
+            logger.info(f"🎯 TAKE PROFIT triggered for {symbol} at {current_price} ({pnl_pct:.2f}%)")
+            self._execute_trade(symbol, 'SELL')
+            return True
+            
+        return False
 
     def _send_heartbeat(self):
         """Send periodic status update"""
@@ -284,6 +317,9 @@ class TradingBot:
         logger.info("\n🔍 Analyzing markets...")
         for symbol in self.symbols:
             try:
+                # First check position limits
+                if self._check_position_limits(symbol):
+                    continue
                 # Skip if traded recently
                 if symbol in self.last_trade_time:
                     if time.time() - self.last_trade_time[symbol] < 86400:
@@ -311,6 +347,59 @@ class TradingBot:
                     symbol=symbol,
                     details=str(e)
                 )
+#update for PnL
+    def _calculate_position_metrics(self) -> Dict:
+        """Calculate all position metrics for alerts"""
+        positions = {}
+        total_pnl = 0.0
+        total_value = 0.0
+        
+        for symbol, pos in self.open_positions.items():
+            current_price = self.exchange.get_price(symbol)
+            if current_price:
+                entry = pos['entry_price']
+                qty = pos['quantity']
+                value = current_price * qty
+                pnl_usd = (current_price - entry) * qty * (-1 if pos['side'] == 'SELL' else 1)
+                pnl_pct = (current_price - entry) / entry * 100 * (-1 if pos['side'] == 'SELL' else 1)
+                
+                positions[symbol] = {
+                    'side': pos['side'],
+                    'quantity': qty,
+                    'entry_price': entry,
+                    'current_price': current_price,
+                    'pnl_usd': pnl_usd,
+                    'pnl_pct': pnl_pct,
+                    'value': value,
+                    'duration': time.time() - pos['entry_time']
+                }
+                total_pnl += pnl_usd
+                total_value += value
+        
+        return {
+            'positions': positions,
+            'total_pnl': total_pnl,
+            'total_value': total_value
+        }
+
+    def _send_performance_update(self):
+        """Send comprehensive performance report"""
+        position_metrics = self._calculate_position_metrics()
+        risk_metrics = self.risk.get_performance_metrics(self.account_balance)
+        
+        # Combine all metrics
+        metrics = {
+            **risk_metrics,
+            'balance': self.account_balance,
+            'positions': position_metrics['positions'],
+            'total_value': position_metrics['total_value']
+        }
+        
+        self.alerts.position_update(metrics['positions'], metrics)
+        
+        # Send detailed performance report every 24h
+        if datetime.now().hour == 8 and datetime.now().minute < 5:  # Once per day at ~8AM
+            self.alerts.performance_report(metrics)
 
     def _execute_trade(self, symbol: str, signal: str):
         logger.info(f"\n⚡ Attempting {signal} for {symbol}...")
@@ -385,27 +474,82 @@ class TradingBot:
             if not order:
                 raise ValueError("Order execution failed")
 
-            # Update state
+            # Get execution details
+            executed_qty = float(order['executedQty'])
+            executed_price = float(order['fills'][0]['price'])
+            commission = float(order['fills'][0]['commission'])
+            notional = executed_qty * executed_price
+
+            # Handle position tracking
+            if signal == 'SELL' and symbol in self.open_positions:
+                position = self.open_positions[symbol]
+                entry_price = position['entry_price']
+                duration = time.time() - position['entry_time']
+                
+                # Calculate PnL (adjusted for short positions)
+                if position['side'] == 'BUY':
+                    pnl_usd = (executed_price - entry_price) * executed_qty - commission
+                    pnl_pct = (executed_price - entry_price) / entry_price * 100
+                else:  # SHORT position
+                    pnl_usd = (entry_price - executed_price) * executed_qty - commission
+                    pnl_pct = (entry_price - executed_price) / entry_price * 100
+                
+                is_win = pnl_usd >= 0
+                
+                # Update risk manager with performance metrics
+                self.risk.record_trade(
+                    pnl_usd=pnl_usd,
+                    current_balance=self.account_balance,
+                    is_win=is_win
+                )
+                
+                # Get streak information
+                metrics = self.risk.get_performance_metrics(self.account_balance)
+                
+                # Send trade closure alert
+                self.alerts.trade_closed(
+                    symbol=symbol,
+                    side=position['side'],
+                    price=executed_price,
+                    quantity=executed_qty,
+                    entry_price=entry_price,
+                    pnl_usd=pnl_usd,
+                    pnl_pct=pnl_pct,
+                    duration=self.alerts._format_duration(duration),
+                    win_streak=metrics['current_win_streak'],
+                    lose_streak=metrics['current_loss_streak']
+                )
+                
+                # Update account balance estimate
+                self.account_balance += pnl_usd
+                del self.open_positions[symbol]
+                
+            elif signal == 'BUY':
+                # Record new position
+                self.open_positions[symbol] = {
+                    'side': 'BUY',
+                    'quantity': executed_qty,
+                    'entry_price': executed_price,
+                    'entry_time': time.time(),
+                    'stop_loss': None,  # Will be set by strategy
+                    'take_profit': None  # Will be set by strategy
+                }
+                
+                # Record trade with 0 PnL
+                self.risk.record_trade(
+                    pnl_usd=0,
+                    current_balance=self.account_balance,
+                    is_win=False
+                )
+                
+                # Update account balance estimate
+                self.account_balance -= notional
+
+            # Update trade history
             self.last_trade_time[symbol] = time.time()
             self._save_last_trade_times()
             
-            if signal == 'BUY':
-                self.risk.record_trade()
-                self.open_positions[symbol] = {
-                    'side': 'BUY',
-                    'quantity': quantity,
-                    'entry_price': price,
-                    'time': time.time()
-                }
-            else:  # SELL
-                if symbol in self.open_positions:
-                    del self.open_positions[symbol]
-
             # Log results
-            executed_qty = float(order['executedQty'])
-            executed_price = float(order['fills'][0]['price'])
-            notional = executed_qty * executed_price
-            
             logger.info(f"✅ Success: {executed_qty} {symbol} @ {executed_price} (${notional:.2f})")
             
             self.logger.log_trade(
@@ -413,18 +557,52 @@ class TradingBot:
                 side=signal,
                 quantity=executed_qty,
                 price=executed_price,
-                notional=notional
+                notional=notional,
+                details=f"Commission: {commission} {market_info['quoteAsset']}"
             )
-            self.alerts.trade_executed(symbol, signal, executed_price, executed_qty)
+            
+            # Send execution alert (with SL/TP if available)
+            if symbol in self.open_positions:
+                position = self.open_positions[symbol]
+                self.alerts.trade_executed(
+                    symbol=symbol,
+                    side=signal,
+                    price=executed_price,
+                    quantity=executed_qty,
+                    stop_loss=position.get('stop_loss'),
+                    take_profit=position.get('take_profit')
+                )
+            else:
+                self.alerts.trade_executed(
+                    symbol=symbol,
+                    side=signal,
+                    price=executed_price,
+                    quantity=executed_qty
+                )
 
-        except Exception as e:
-            error_msg = f"{symbol} {signal} failed: {str(e)}"
+        except ValueError as e:
+            error_msg = f"Validation Error: {e}"
             logger.error(f"❌ {error_msg}")
             self.logger.log_error(
                 event_type="TRADE_ERROR",
                 symbol=symbol,
                 side=signal,
-                details=str(e)
+                details=error_msg
+            )
+        except Exception as e:
+            error_msg = f"Unexpected Error: {e}"
+            logger.error(f"❌ {error_msg}", exc_info=True)
+            self.logger.log_error(
+                event_type="TRADE_ERROR",
+                symbol=symbol,
+                side=signal,
+                details=error_msg,
+                stack_trace=str(traceback.format_exc())
+            )
+            self.alerts.error_alert(
+                "TRADE_FAILURE",
+                f"{symbol} {signal} failed: {str(e)}",
+                symbol
             )
 
     def _save_last_trade_times(self):

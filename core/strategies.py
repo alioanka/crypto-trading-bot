@@ -1,10 +1,11 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from collections import deque
 from utils.config import Config
 from utils.alerts import AlertSystem
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 alerts = AlertSystem()
@@ -17,6 +18,14 @@ except ImportError:
     TA_LIB_AVAILABLE = False
     logger.warning("TA-Lib not available - using fallback calculations")
 
+@dataclass
+class TradeSignal:
+    action: str  # "BUY", "SELL", or "HOLD"
+    price: float
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+    confidence: Optional[float] = None
+
 class BaseStrategy:
     def __init__(self):
         self.debug_mode = Config.DEBUG_MODE
@@ -27,8 +36,20 @@ class BaseStrategy:
         if self.debug_mode:
             logger.info("Debug mode enabled - verbose logging active")
 
+    def calculate_stop_loss(self, entry_price: float, is_long: bool = True) -> float:
+        """Calculate stop loss price based on configured percentage"""
+        if is_long:
+            return entry_price * (1 - abs(Config.STOP_LOSS_PCT)/100)
+        return entry_price * (1 + abs(Config.STOP_LOSS_PCT)/100)
+
+    def calculate_take_profit(self, entry_price: float, is_long: bool = True) -> float:
+        """Calculate take profit price based on configured percentage"""
+        if is_long:
+            return entry_price * (1 + abs(Config.TAKE_PROFIT_PCT)/100)
+        return entry_price * (1 - abs(Config.TAKE_PROFIT_PCT)/100)
+
     def check_data_quality(self, data: List[Dict]) -> bool:
-        """Enhanced data quality validation with more flexible checks"""
+        """Enhanced data quality validation"""
         if not Config.DATA_QUALITY_CHECKS:
             return True
             
@@ -39,23 +60,19 @@ class BaseStrategy:
         last_candle = data[-1]
         issues = []
         
-        # Check required fields
         required_fields = ['open', 'high', 'low', 'close', 'volume', 'time']
         for field in required_fields:
             if field not in last_candle:
                 issues.append(f"Missing field: {field}")
                 return False
                 
-        # Check for zero or negative prices
         if last_candle['close'] <= 0:
             issues.append(f"Invalid close price: {last_candle['close']}")
             return False
             
-        # Skip volume checks for 1m candles (too noisy)
         if Config.CANDLE_INTERVAL != '1m' and last_candle['volume'] < Config.MIN_VOLUME:
             issues.append(f"Low volume: {last_candle['volume']} < {Config.MIN_VOLUME}")
         
-        # Skip time checks for first candle
         current_time = pd.to_datetime(last_candle['time'])
         if self.last_candle_time is not None:
             interval_map = {'1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400}
@@ -105,11 +122,15 @@ class EMACrossStrategy(BaseStrategy):
         self.ema_long = Config.EMA_LONG_PERIOD
         logger.info(f"EMACrossStrategy initialized: EMA({self.ema_short}/{self.ema_long})")
         
-    def generate_signal(self, data: List[Dict]) -> Optional[str]:
-        """Simple EMA crossover strategy"""
+    def generate_signal(self, data: List[Dict]) -> Optional[TradeSignal]:
         if hasattr(self, 'test_signal') and self.test_signal:
-            signal = self.test_signal
-            self.test_signal = None  # Reset after use
+            signal = TradeSignal(
+                action=self.test_signal,
+                price=data[-1]['close'],
+                stop_loss=self.calculate_stop_loss(data[-1]['close']),
+                take_profit=self.calculate_take_profit(data[-1]['close'])
+            )
+            self.test_signal = None
             logger.info(f"TEST MODE: Returning forced signal: {signal}")
             return signal
             
@@ -135,11 +156,20 @@ class EMACrossStrategy(BaseStrategy):
         
         if (previous['ema_short'] <= previous['ema_long']) and (current['ema_short'] > current['ema_long']):
             logger.info("✅ BUY signal generated")
-            return 'BUY'
+            return TradeSignal(
+                action='BUY',
+                price=current['close'],
+                stop_loss=self.calculate_stop_loss(current['close']),
+                take_profit=self.calculate_take_profit(current['close'])
+            )
         elif (previous['ema_short'] >= previous['ema_long']) and (current['ema_short'] < current['ema_long']):
             logger.info("✅ SELL signal generated")
-            return 'SELL'
-            
+            return TradeSignal(
+                action='SELL',
+                price=current['close'],
+                stop_loss=self.calculate_stop_loss(current['close'], is_long=False),
+                take_profit=self.calculate_take_profit(current['close'], is_long=False)
+            )
         return None
 
 class SmartTrendStrategy(BaseStrategy):
@@ -183,10 +213,14 @@ class SmartTrendStrategy(BaseStrategy):
 
         return rsi
 
-    def generate_signal(self, data: List[Dict]) -> Optional[str]:
-        """Advanced strategy with TA-Lib fallback"""
+    def generate_signal(self, data: List[Dict]) -> Optional[TradeSignal]:
         if self.test_signal:
-            signal = self.test_signal
+            signal = TradeSignal(
+                action=self.test_signal,
+                price=data[-1]['close'],
+                stop_loss=self.calculate_stop_loss(data[-1]['close']),
+                take_profit=self.calculate_take_profit(data[-1]['close'])
+            )
             self.test_signal = None
             logger.info(f"TEST MODE: Returning forced signal: {signal}")
             return signal
@@ -223,7 +257,13 @@ class SmartTrendStrategy(BaseStrategy):
         
         if all([ema_cross, rsi_above, rsi_cross, rsi_not_overbought]):
             logger.info("✅ BUY signal generated")
-            return 'BUY'
+            return TradeSignal(
+                action='BUY',
+                price=current['close'],
+                stop_loss=self.calculate_stop_loss(current['close']),
+                take_profit=self.calculate_take_profit(current['close']),
+                confidence=(current['rsi'] - 50)/50  # Normalized 0-1
+            )
             
         # Bearish conditions
         ema_cross = current['ema_short'] < current['ema_long']
@@ -233,6 +273,12 @@ class SmartTrendStrategy(BaseStrategy):
         
         if all([ema_cross, rsi_below, rsi_cross, rsi_not_oversold]):
             logger.info("✅ SELL signal generated")
-            return 'SELL'
+            return TradeSignal(
+                action='SELL',
+                price=current['close'],
+                stop_loss=self.calculate_stop_loss(current['close'], is_long=False),
+                take_profit=self.calculate_take_profit(current['close'], is_long=False),
+                confidence=(50 - current['rsi'])/50  # Normalized 0-1
+            )
             
         return None

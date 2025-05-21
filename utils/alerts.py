@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class AlertSystem:
     """
-    Comprehensive alert system for trading notifications with retry mechanism
+    Comprehensive alert system with advanced performance tracking
     """
     def __init__(self):
         self.base_url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
@@ -23,7 +23,8 @@ class AlertSystem:
             'RISK_ALERT': {'icon': '⚠️', 'color': '#FFA500'},
             'SYSTEM': {'icon': 'ℹ️', 'color': '#1E90FF'},
             'ERROR': {'icon': '❌', 'color': '#FF0000'},
-            'HEARTBEAT': {'icon': '💓', 'color': '#FF69B4'}
+            'PORTFOLIO': {'icon': '📊', 'color': '#9370DB'},
+            'PERFORMANCE': {'icon': '📈', 'color': '#20B2AA'}
         }
         logger.info("AlertSystem initialized")
 
@@ -59,28 +60,99 @@ class AlertSystem:
                     return False
         return False
 
-    # TRADE ALERTS
-    def trade_executed(self, symbol: str, side: str, price: float, quantity: float) -> bool:
+    def trade_executed(self, symbol: str, side: str, price: float, quantity: float, 
+                     stop_loss: Optional[float] = None, take_profit: Optional[float] = None) -> bool:
         logger.info(f"Sending trade alert for {symbol} {side}")
-        return self._send_alert(
+        message = (
             f"<b>Pair</b>: {symbol}\n"
             f"<b>Type</b>: {side.upper()}\n"
             f"<b>Price</b>: ${price:.4f}\n"
             f"<b>Quantity</b>: {quantity:.6f}\n"
-            f"<b>Value</b>: ${price * quantity:.2f}",
-            alert_type=side.upper()
+            f"<b>Value</b>: ${price * quantity:.2f}"
+        )
+        
+        if stop_loss:
+            sl_pct = (stop_loss - price)/price * 100 if side == 'BUY' else (price - stop_loss)/price * 100
+            message += f"\n<b>Stop Loss</b>: ${stop_loss:.4f} (<code>{sl_pct:+.2f}%</code>)"
+            
+        if take_profit:
+            tp_pct = (take_profit - price)/price * 100 if side == 'BUY' else (price - take_profit)/price * 100
+            message += f"\n<b>Take Profit</b>: ${take_profit:.4f} (<code>{tp_pct:+.2f}%</code>)"
+            
+        return self._send_alert(message, alert_type=side.upper())
+
+    def trade_closed(self, symbol: str, side: str, price: float, quantity: float, 
+                   entry_price: float, pnl_usd: float, pnl_pct: float, duration: str,
+                   win_streak: int, lose_streak: int) -> bool:
+        """Enhanced trade closure alert with full metrics"""
+        logger.info(f"Sending trade closure alert for {symbol}")
+        return self._send_alert(
+            f"<b>Pair</b>: {symbol}\n"
+            f"<b>Type</b>: {side.upper()} CLOSED\n"
+            f"<b>Entry</b>: ${entry_price:.4f}\n"
+            f"<b>Exit</b>: ${price:.4f}\n"
+            f"<b>Quantity</b>: {quantity:.6f}\n"
+            f"<b>Duration</b>: {duration}\n"
+            f"<b>PnL</b>: ${pnl_usd:.2f} (<code>{pnl_pct:+.2f}%</code>)\n"
+            f"<b>Streak</b>: {'🔥' * win_streak if pnl_usd >=0 else '💧' * lose_streak}",
+            alert_type="TAKE_PROFIT" if pnl_usd >=0 else "STOP_LOSS"
         )
 
-    def trade_closed(self, symbol: str, side: str, price: float, quantity: float, pnl: float) -> bool:
-        logger.info(f"Sending trade closure alert for {symbol} {side}")
-        return self._send_alert(
-            f"<b>Pair</b>: {symbol}\n"
-            f"<b>Type</b>: {side.upper()}\n"
-            f"<b>Price</b>: ${price:.4f}\n"
-            f"<b>Quantity</b>: {quantity:.6f}\n"
-            f"<b>PnL</b>: ${abs(pnl):.2f} ({'🔺+' if pnl >=0 else '🔻'}{pnl:.2f})",
-            alert_type="TAKE_PROFIT" if pnl >=0 else "STOP_LOSS"
+    def position_update(self, positions: Dict, metrics: Dict) -> bool:
+        """Detailed portfolio update with performance metrics"""
+        if not positions:
+            return False
+            
+        message = (
+            f"📊 <b>PORTFOLIO UPDATE</b>\n"
+            f"• Balance: <code>${metrics['balance']:.2f}</code>\n"
+            f"• Today's PnL: <code>${metrics['daily_pnl']:.2f}</code> (<code>{metrics['daily_pnl_pct']:.2f}%</code>)\n"
+            f"• Total PnL: <code>${metrics['total_pnl']:.2f}</code> (<code>{metrics['total_pnl_pct']:.2f}%</code>)\n"
+            f"• Win Rate: <code>{metrics['win_rate']:.1f}%</code>\n"
+            f"• Risk/Reward: <code>1:{metrics['risk_reward']:.2f}</code>\n\n"
+            f"<b>POSITIONS</b> ({len(positions)}):"
         )
+        
+        for symbol, pos in positions.items():
+            message += (
+                f"\n\n<b>{symbol}</b>\n"
+                f"• Side: {pos['side']}\n"
+                f"• Size: {pos['quantity']:.4f} @ ${pos['entry_price']:.4f}\n"
+                f"• Current: ${pos['current_price']:.4f}\n"
+                f"• PnL: ${pos['pnl_usd']:.2f} (<code>{pos['pnl_pct']:+.2f}%</code>)\n"
+                f"• Value: ${pos['value']:.2f}"
+            )
+        
+        return self._send_alert(message, "PORTFOLIO")
+
+    def performance_report(self, metrics: Dict) -> bool:
+        """Detailed performance analytics report"""
+        return self._send_alert(
+            f"📈 <b>PERFORMANCE REPORT</b>\n"
+            f"• Total Trades: <code>{metrics['total_trades']}</code>\n"
+            f"• Win Rate: <code>{metrics['win_rate']:.1f}%</code>\n"
+            f"• Avg Win: <code>{metrics['avg_win']:.2f}%</code>\n"
+            f"• Avg Loss: <code>{metrics['avg_loss']:.2f}%</code>\n"
+            f"• Risk/Reward: <code>1:{metrics['risk_reward']:.2f}</code>\n"
+            f"• Profit Factor: <code>{metrics['profit_factor']:.2f}</code>\n"
+            f"• Max Drawdown: <code>{metrics['max_drawdown']:.2f}%</code>\n"
+            f"• Sharpe Ratio: <code>{metrics['sharpe_ratio']:.2f}</code>",
+            "PERFORMANCE"
+        )
+
+    def _format_duration(self, seconds: float) -> str:
+        """Convert seconds to human-readable duration"""
+        minutes, sec = divmod(seconds, 60)
+        hours, min = divmod(minutes, 60)
+        days, hr = divmod(hours, 24)
+        
+        if days > 0:
+            return f"{int(days)}d {int(hr)}h"
+        elif hours > 0:
+            return f"{int(hours)}h {int(min)}m"
+        return f"{int(minutes)}m {int(sec)}s"
+
+    # ... [keep existing system/error alerts]
 
     # SYSTEM ALERTS
     def bot_started(self, version: str, pairs: List[str]) -> bool:
