@@ -1,7 +1,7 @@
 import math
 import time
 import logging
-from decimal import Decimal, getcontext
+from decimal import Decimal, getcontext, ROUND_DOWN
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from typing import Dict, Optional, List, Union, Tuple
@@ -127,27 +127,39 @@ class BinanceAPI:
         """Get current open positions with fallbacks"""
         positions = {}
         try:
-            balances = self.get_account_balance()
-            for symbol in self.STABLE_PAIRS:
-                try:
-                    market_info = self.get_market_info(symbol)
-                    base_asset = market_info['baseAsset']
-                    if base_asset in balances and balances[base_asset] > 0:
-                        positions[symbol] = {
-                            'quantity': balances[base_asset],
-                            'entry_price': self.get_average_entry_price(symbol),
-                            'side': 'BUY'
-                        }
-                        logger.info(f"Open position found: {symbol} - {positions[symbol]}")
-                except Exception as e:
-                    error_msg = f"Error processing {symbol} position: {e}"
-                    logger.error(error_msg)
-                    alerts.error_alert("POSITION_ERROR", error_msg, symbol)
+            # First check actual orders
+            open_orders = self.client.get_open_orders()
+            for order in open_orders:
+                if order['side'] == 'BUY' and order['status'] == 'FILLED':
+                    symbol = order['symbol']
+                    positions[symbol] = {
+                        'quantity': float(order['executedQty']),
+                        'entry_price': float(order['price']),
+                        'side': 'BUY'
+                    }
+            
+            # Fallback to balance check if no orders found
+            if not positions:
+                balances = self.get_account_balance()
+                for symbol in self.STABLE_PAIRS:
+                    try:
+                        market_info = self.get_market_info(symbol)
+                        base_asset = market_info['baseAsset']
+                        if base_asset in balances and balances[base_asset] > 0:
+                            positions[symbol] = {
+                                'quantity': balances[base_asset],
+                                'entry_price': self.get_average_entry_price(symbol),
+                                'side': 'BUY'
+                            }
+                    except Exception as e:
+                        logger.error(f"Error processing {symbol} position: {e}")
+            
+            logger.info(f"Found {len(positions)} open positions")
+            return positions
+            
         except Exception as e:
-            error_msg = f"Error getting positions: {e}"
-            logger.error(error_msg)
-            alerts.error_alert("POSITION_ERROR", error_msg)
-        return positions
+            logger.error(f"Error getting positions: {e}")
+            return {}
 
     def get_average_entry_price(self, symbol: str) -> float:
         """Calculate average entry price with error handling"""
@@ -216,6 +228,15 @@ class BinanceAPI:
                 logger.error(error_msg)
                 alerts.error_alert("ORDER_ERROR", error_msg, symbol)
                 return None
+            
+                # Add precision adjustment for all quantities
+            market_info = self.get_market_info(symbol)
+            step_size = Decimal(str(market_info['stepSize']))
+            precision = abs(step_size.as_tuple().exponent)
+            quantity = float(Decimal(str(quantity)).quantize(
+                Decimal(10) ** -precision, 
+                rounding=ROUND_DOWN
+                ))
 
             # Calculate precision
             step_size = Decimal(str(market_info['stepSize']))

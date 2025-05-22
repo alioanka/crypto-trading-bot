@@ -21,13 +21,15 @@ class Config:
 
     # Trading Parameters
     CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "5m")  # Changed default to 5m
-    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 3))
+    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 5))
     
     # Risk Management Parameters
     MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", 0.05))  # 5% max drawdown
     RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", 0.02))  # 1% per trade
     STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 0.015))  # 1.5%
     TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 0.03))  # 3%
+    STRANDED_POSITION_TIMEOUT = 86400  # 24 hours in seconds
+    STRANDED_POSITION_RETRY_INTERVAL = 3600  # 1 hour in seconds
 
     # Strategy Configuration
     STRATEGY = os.getenv("STRATEGY", "SmartTrend")  # SmartTrend or EMACross

@@ -33,13 +33,33 @@ class RiskManager:
         """Check if trading is allowed with automatic daily reset"""
         self._check_daily_reset()
         
+            # Enhanced cooldown check
+        if self.last_trade_time:
+            elapsed = (datetime.now() - self.last_trade_time).total_seconds()
+            required_cooldown = self.cooldown_period.total_seconds()
+            
+            # Dynamic cooldown based on recent performance
+            if self.consecutive_losses > 2:
+                required_cooldown *= 2  # Double cooldown after losses
+                
+            if elapsed < required_cooldown:
+                remaining = required_cooldown - elapsed
+                logger.warning(
+                    f"Cooldown active - {int(remaining//60)}m {int(remaining%60)}s remaining. "
+                    f"Consecutive losses: {self.consecutive_losses}"
+                )
+                return False
+        # Debug logging
+        logger.debug(f"Trade check - Daily: {self.daily_trades}/{self.max_daily_trades}, "
+                    f"Drawdown: {self.daily_pnl:.2f}%/{self.max_drawdown*100:.2f}%")
+        
         if self.daily_trades >= self.max_daily_trades:
             logger.warning(f"Daily trade limit reached: {self.daily_trades}/{self.max_daily_trades}")
             alerts.error_alert("RISK_LIMIT", "Daily trade limit reached")
             return False
             
-        if self.daily_pnl <= -abs(self.max_drawdown):
-            logger.warning(f"Max drawdown reached: {self.daily_pnl*100:.2f}% <= -{self.max_drawdown*100:.0f}%")
+        if self.daily_pnl <= -abs(self.max_drawdown * 100):  # Convert to percentage
+            logger.warning(f"Max drawdown reached: {self.daily_pnl:.2f}% <= -{self.max_drawdown*100:.2f}%")
             alerts.error_alert("RISK_LIMIT", "Max drawdown reached")
             return False
             
@@ -51,40 +71,57 @@ class RiskManager:
         logger.debug("Risk check passed - trading allowed")
         return True
 
-    def record_trade(self, pnl_usd: float, current_balance: float, is_win: bool):
-        """Record trade with full performance tracking"""
-        self.total_trades += 1
-        self.daily_trades += 1
-        pnl_pct = (pnl_usd / current_balance) * 100
-        
-        # Update streaks
-        if is_win:
-            self.winning_trades += 1
-            self.consecutive_wins += 1
-            self.consecutive_losses = 0
-            self.max_consecutive_wins = max(self.max_consecutive_wins, self.consecutive_wins)
-        else:
-            self.losing_trades += 1
-            self.consecutive_losses += 1
-            self.consecutive_wins = 0
-            self.max_consecutive_losses = max(self.max_consecutive_losses, self.consecutive_losses)
-        
-        # Update PnL tracking
-        self.daily_pnl += pnl_pct
-        self.total_pnl += pnl_usd
-        
-        # Update drawdown calculations
-        self.peak_balance = max(self.peak_balance, current_balance)
-        drawdown = (self.peak_balance - current_balance) / self.peak_balance * 100
-        self.max_drawdown_pct = max(self.max_drawdown_pct, drawdown)
-        
-        self.last_trade_time = datetime.now()
-        
-        logger.info(
-            f"Trade recorded - Count: {self.daily_trades}/{self.max_daily_trades}, "
-            f"Daily PnL: {self.daily_pnl:.2f}%, "
-            f"Total PnL: ${self.total_pnl:.2f}"
-        )
+    def record_trade(self, symbol: str, side: str, quantity: float, 
+                    price: float, entry_price: float, current_balance: float,
+                    pnl_usd: float = None, pnl_pct: float = None):
+        """Record trade with comprehensive metrics"""
+        try:
+            # Calculate PnL if not provided
+            if pnl_usd is None and side == 'SELL':
+                pnl_usd = (price - entry_price) * quantity
+                pnl_pct = (price - entry_price) / entry_price * 100
+                
+            is_win = pnl_usd >= 0 if pnl_usd is not None else False
+            
+            # Rest of the method...
+            
+            if side == 'SELL':
+                pnl_usd = (price - entry_price) * quantity
+                pnl_pct = (price - entry_price) / entry_price * 100
+                is_win = pnl_usd >= 0
+            
+            # Update metrics
+            self.total_trades += 1
+            self.daily_trades += 1
+            
+            if is_win:
+                self.winning_trades += 1
+                self.consecutive_wins += 1
+                self.consecutive_losses = 0
+            else:
+                self.losing_trades += 1
+                self.consecutive_losses += 1
+                self.consecutive_wins = 0
+                
+            # Update PnL tracking
+            self.daily_pnl += pnl_pct
+            self.total_pnl += pnl_usd
+            
+            # Update drawdown calculations
+            self.peak_balance = max(self.peak_balance, current_balance)
+            drawdown = (self.peak_balance - current_balance) / self.peak_balance * 100
+            self.max_drawdown_pct = max(self.max_drawdown_pct, drawdown)
+            
+            self.last_trade_time = datetime.now()
+            
+            logger.info(
+                f"Trade recorded - {symbol} {side} | "
+                f"PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%) | "
+                f"Daily: {self.daily_trades}/{self.max_daily_trades}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error recording trade: {e}")
 
     def get_performance_metrics(self, current_balance: float) -> Dict:
         """Calculate comprehensive performance metrics"""

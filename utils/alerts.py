@@ -178,6 +178,24 @@ class AlertSystem:
             f"<b>24h Change</b>: {'🔺+' if change >=0 else '🔻'}{change:.2f}",
             alert_type="SYSTEM"
         )
+    
+    # In your AlertSystem class (utils/alerts.py), add:
+    def trade_closure_alert(self, symbol, side, quantity, price, 
+                        pnl_usd, pnl_pct, entry_price, entry_time):
+        duration = time.time() - entry_time
+        hours = int(duration // 3600)
+        minutes = int((duration % 3600) // 60)
+        
+        message = (
+            f"📊 <b>TRADE CLOSED</b>\n"
+            f"• Pair: {symbol}\n"
+            f"• Side: {side}\n"
+            f"• Quantity: {quantity:.4f}\n"
+            f"• Price: {price:.4f}\n"
+            f"• PnL: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)\n"
+            f"• Duration: {hours}h {minutes}m"
+        )
+        self._send_alert(message, "TRADE")
 
     # ERROR ALERTS
     def error_alert(self, error_type: str, details: str, symbol: Optional[str] = None) -> bool:
