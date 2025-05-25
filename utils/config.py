@@ -21,7 +21,7 @@ class Config:
 
     # Trading Parameters
     CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "5m")  # Changed default to 5m
-    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 5))
+    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 10))
     
     # Risk Management Parameters
     MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", 0.05))  # 5% max drawdown
@@ -38,8 +38,8 @@ class Config:
     SMARTTREND_EMA_SHORT = int(os.getenv("SMARTTREND_EMA_SHORT", 12))  # Widened
     SMARTTREND_EMA_LONG = int(os.getenv("SMARTTREND_EMA_LONG", 26))    # Widened
     SMARTTREND_RSI_PERIOD = int(os.getenv("SMARTTREND_RSI_PERIOD", 14))
-    SMARTTREND_RSI_OVERBOUGHT = int(os.getenv("SMARTTREND_RSI_OVERBOUGHT", 65))
-    SMARTTREND_RSI_OVERSOLD = int(os.getenv("SMARTTREND_RSI_OVERSOLD", 35))
+    SMARTTREND_RSI_OVERBOUGHT = int(os.getenv("SMARTTREND_RSI_OVERBOUGHT", 70))
+    SMARTTREND_RSI_OVERSOLD = int(os.getenv("SMARTTREND_RSI_OVERSOLD", 30))
     
     # EMA Cross Strategy Parameters
     EMA_SHORT_PERIOD = int(os.getenv("EMA_SHORT_PERIOD", 12))  # Widened

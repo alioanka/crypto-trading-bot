@@ -176,6 +176,7 @@ class TradingBot:
             while True:
                 cycle_start = time.time()
                 self._validate_open_positions()
+                self._check_price_drops()
                 heartbeat_count += 1
                 
                 # Send heartbeat every 12 cycles (approx hourly for 5m interval)
@@ -293,34 +294,79 @@ class TradingBot:
         return False
 
     def _send_heartbeat(self):
-        """Send periodic status update"""
-        status = {
-            "uptime": str(datetime.now() - self.start_time),
-            "symbols": self.symbols if isinstance(self.symbols, list) else [],
-            "positions": len(self.open_positions),
-            "balance": self.account_balance,
-            "last_trades": list(self.last_trade_time.keys()) if isinstance(self.last_trade_time, dict) else [],
-            "risk_metrics": self.risk.get_risk_metrics()
-        }
-        
-        # Ensure symbols is always a list for joining
-        symbols_list = status['symbols'] if isinstance(status['symbols'], list) else []
-        
-        message = (
-            f"<b>💓 BOT HEARTBEAT</b>\n"
-            f"• Uptime: {status['uptime']}\n"
-            f"• Monitoring: {len(symbols_list)} pairs\n"
-            f"• Positions: {status['positions']}\n"
-            f"• Balance: ${status['balance']:.2f}\n"
-            f"• Daily Trades: {status['risk_metrics']['daily_trades']}/{status['risk_metrics']['max_daily_trades']}"
-        )
-        
-        self.alerts._send_alert(message, "SYSTEM")
-        
-        # Create a safe copy of status for logging
-        log_status = status.copy()
-        log_status['symbols'] = symbols_list  # Ensure this is a list
-        self.logger.log_system("HEARTBEAT", log_status)
+        """Comprehensive heartbeat with portfolio details and performance metrics"""
+        try:
+            # Get current positions with detailed metrics
+            position_metrics = self._calculate_position_metrics()
+            risk_metrics = self.risk.get_performance_metrics(self.account_balance)
+            
+            # Format position details
+            position_lines = []
+            total_position_value = 0
+            for symbol, pos in position_metrics['positions'].items():
+                duration = self._format_duration(pos['duration'])
+                position_value = pos['quantity'] * pos['current_price']
+                total_position_value += position_value
+                
+                position_lines.append(
+                    f"• {symbol}: {pos['side']} {pos['quantity']:.4f} @ {pos['entry_price']:.4f}\n"
+                    f"  Current: {pos['current_price']:.4f} | "
+                    f"PnL: ${pos['pnl_usd']:+.2f} ({pos['pnl_pct']:+.2f}%)\n"
+                    f"  Value: ${position_value:.2f} | "
+                    f"Duration: {duration}"
+                )
+            
+            # Calculate portfolio totals
+            portfolio_value = self.account_balance + total_position_value
+            portfolio_pnl = position_metrics['total_pnl']
+            
+            # Prepare message with markdown formatting
+            message = [
+                f"💓 <b>PORTFOLIO HEARTBEAT</b>",
+                f"⏱️ <b>Uptime</b>: {str(datetime.now() - self.start_time)}",
+                "",
+                f"💰 <b>Balances</b>",
+                f"• Available: <code>${self.account_balance:.2f}</code>",
+                f"• Positions: <code>${total_position_value:.2f}</code>",
+                f"• Total: <code>${portfolio_value:.2f}</code>",
+                f"• PnL: <code>${portfolio_pnl:+.2f}</code>",
+                "",
+                f"📊 <b>Performance</b>",
+                f"• Win Rate: <code>{risk_metrics['win_rate']:.1f}%</code>",
+                f"• Avg Win: <code>{risk_metrics['avg_win']:.2f}%</code>",
+                f"• Avg Loss: <code>{risk_metrics['avg_loss']:.2f}%</code>",
+                f"• Profit Factor: <code>{risk_metrics['profit_factor']:.2f}</code>",
+                f"• Max Drawdown: <code>{risk_metrics['max_drawdown']:.2f}%</code>",
+                "",
+                f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
+            ] + position_lines
+            
+            # Send the alert
+            self.alerts._send_alert("\n".join(message), "SYSTEM")
+            
+            # Log detailed metrics
+            self.logger.log_system("HEARTBEAT", {
+                'uptime': str(datetime.now() - self.start_time),
+                'balance': self.account_balance,
+                'position_value': total_position_value,
+                'portfolio_value': portfolio_value,
+                'portfolio_pnl': portfolio_pnl,
+                'positions': position_metrics['positions'],
+                'performance': risk_metrics,
+                'daily_trades': self.risk.daily_trades,
+                'max_daily_trades': self.risk.max_daily_trades
+            })
+            
+        except Exception as e:
+            logger.error(f"Heartbeat generation failed: {e}")
+            # Fallback simple heartbeat
+            self.alerts._send_alert(
+                f"💓 Basic Heartbeat\n"
+                f"Uptime: {str(datetime.now() - self.start_time)}\n"
+                f"Balance: ${self.account_balance:.2f}\n"
+                f"Positions: {len(self.open_positions)}",
+                "SYSTEM"
+            )
 
 # ... [rest of the code remains the same]
 
@@ -541,15 +587,68 @@ class TradingBot:
         }
         self.logger.log_system("PERFORMANCE_REPORT", metrics)
 
+    def _check_price_drops(self):
+        """Monitor for significant price drops"""
+        for symbol, position in self.open_positions.items():
+            current_price = self.exchange.get_price(symbol)
+            if not current_price:
+                continue
+                
+            # Calculate price drop percentage
+            drop_pct = (position['entry_price'] - current_price) / position['entry_price'] * 100
+            
+            # If price dropped more than 50%, trigger emergency measures
+            if drop_pct > 50:
+                logger.warning(f"🚨 Extreme price drop detected: {symbol} down {drop_pct:.2f}%")
+                self._execute_emergency_sale(symbol, current_price)
+
+    def _execute_emergency_sale(self, symbol: str, current_price: float):
+        """Special procedure for extreme price drops"""
+        try:
+            # Get available balance
+            balances = self.exchange.get_account_balance()
+            base_asset = symbol.replace('USDT', '')
+            available = Decimal(str(balances.get(base_asset, 0)))
+            
+            # Sell entire available balance regardless of notional
+            market_info = self.exchange.get_market_info(symbol)
+            step_size = Decimal(str(market_info['stepSize']))
+            precision = abs(step_size.as_tuple().exponent)
+            quantity = float(available.quantize(
+                Decimal(10)**-precision,
+                rounding=ROUND_DOWN
+            ))
+            
+            logger.warning(f"🚨 EMERGENCY SALE: Selling {quantity} {symbol} at {current_price}")
+            order = self.exchange.client.create_order(
+                symbol=symbol,
+                side='SELL',
+                type='MARKET',
+                quantity=quantity
+            )
+            
+            # Send special emergency alert
+            self.alerts._send_alert(
+                f"🚨 EMERGENCY SALE EXECUTED\n"
+                f"{symbol} {quantity:.2f} @ {current_price:.6f}\n"
+                f"Reason: Extreme price drop",
+                "RISK_ALERT"
+            )
+            
+        except Exception as e:
+            logger.error(f"Emergency sale failed for {symbol}: {e}")
+
     def _execute_trade(self, symbol: str, signal: str):
-        """Enhanced trade execution with dust handling"""
+        """Enhanced trade execution with complete error handling and alerting"""
         logger.info(f"\n⚡ Executing {signal} for {symbol}...")
         
         try:
             # Get current price and market info
             price = self.exchange.get_price(symbol)
             if not price or price <= 0:
-                raise ValueError(f"Invalid price for {symbol}: {price}")
+                error_msg = f"Invalid price for {symbol}: {price}"
+                self._send_trade_error_alert(symbol, signal, error_msg)
+                raise ValueError(error_msg)
 
             market_info = self.exchange.get_market_info(symbol)
             min_qty = float(market_info['minQty'])
@@ -557,18 +656,17 @@ class TradingBot:
             min_notional = float(market_info['minNotional'])
             base_asset = market_info['baseAsset']
             precision = int(round(-math.log(step_size, 10)))
+            price_drop_pct = 0  # Initialize price drop percentage
+            is_emergency_sale = False
 
             # Calculate quantity based on signal type
             if signal == 'BUY':
-                # Use 5% of balance or RISK_PER_TRADE, whichever is smaller
                 risk_amount = min(self.account_balance * 0.05,
                                 self.account_balance * Config.RISK_PER_TRADE)
                 quantity = risk_amount / price
                 
-                # Round DOWN to step size
                 quantity = math.floor(quantity * 10**precision) / 10**precision
                 
-                # Ensure minimum quantity and notional
                 if quantity < min_qty:
                     quantity = min_qty
                     logger.info(f"Adjusting to minimum quantity: {min_qty}")
@@ -578,82 +676,127 @@ class TradingBot:
                     quantity = max(min_qty_needed, min_qty)
                     logger.info(f"Adjusting to meet minimum notional: {quantity}")
 
-# In the SELL section of _execute_trade():
             else:  # SELL
-                # Get available balance
                 balances = self.exchange.get_account_balance()
-                base_asset = market_info['baseAsset']
                 available = balances.get(base_asset, 0)
                 
                 if available <= 0:
-                    raise ValueError(f"No {base_asset} available to sell")
+                    error_msg = f"No {base_asset} available to sell"
+                    self._send_trade_error_alert(symbol, signal, error_msg)
+                    raise ValueError(error_msg)
                 
-                # Calculate precision
-                step_size = Decimal(str(market_info['stepSize']))
-                precision = abs(step_size.as_tuple().exponent)
-                
-                # Calculate max sellable quantity (accounting for fees)
+                # Calculate quantity with proper rounding
                 quantity = float((Decimal(str(available)) * Decimal(str(1 - self.trading_fee))).quantize(
                     Decimal(10)**-precision,
                     rounding=ROUND_DOWN
                 ))
                 
-                # Special case for positions that dropped below min notional
-                position_value = quantity * price
-                min_notional = market_info['minNotional']
-                
-                if position_value < min_notional:
-                    logger.warning(f"Position below min notional (${position_value:.2f} < ${min_notional:.2f}), "
-                                f"attempting to sell anyway")
+                # Check for significant price drops
+                if symbol in self.open_positions:
+                    entry_price = self.open_positions[symbol]['entry_price']
+                    price_drop_pct = (entry_price - price) / entry_price * 100
                     
-                    # For very small positions, sell entire balance
-                    if position_value < min_notional * 0.2:
+                    # Emergency sale for significant drops
+                    if price_drop_pct > 30:
+                        is_emergency_sale = True
+                        logger.warning(f"🚨 Emergency sale ({price_drop_pct:.2f}% drop)")
                         quantity = float(available)
-                        if quantity < market_info['minQty']:
-                            logger.warning(f"Position below minimum quantity, attempting anyway: {quantity} < {market_info['minQty']}")
-                # Final validation
+                        self._send_emergency_alert(symbol, quantity, price, price_drop_pct)
+
+                # Special handling for DOGE
+                if symbol == 'DOGEUSDT':
+                    quantity = max(quantity, 1.0)
+                    quantity = math.floor(quantity)
+
+                position_value = quantity * price
+                
+                # Final validation with special handling for small positions
                 if quantity < min_qty:
-                    raise ValueError(f"Quantity below minimum: {quantity} < {min_qty}")
+                    error_msg = f"Quantity below minimum: {quantity} < {min_qty}"
+                    self._send_trade_error_alert(symbol, signal, error_msg)
+                    raise ValueError(error_msg)
                     
-                if (quantity * price) < min_notional:
-                    raise ValueError(f"Notional too small: ${quantity*price:.2f} < ${min_notional:.2f}")
+                if (position_value < min_notional) and not is_emergency_sale:
+                    if symbol in self.open_positions:
+                        logger.warning(f"⚠️ Small position sale attempt (${position_value:.2f} < ${min_notional:.2f})")
+                        self._send_small_position_alert(symbol, quantity, position_value, min_notional)
+                        
+                        # Special case: Attempt to sell small positions with market order
+                        try:
+                            order = self.exchange.client.create_order(
+                                symbol=symbol,
+                                side='SELL',
+                                type='MARKET',
+                                quantity=quantity
+                            )
+                            return self._process_order_execution(symbol, signal, order)
+                        except Exception as e:
+                            error_msg = f"Small position sale failed: {str(e)}"
+                            self._send_trade_error_alert(symbol, signal, error_msg)
+                            raise ValueError(error_msg)
+                    else:
+                        error_msg = f"Notional too small: ${position_value:.2f} < ${min_notional:.2f}"
+                        self._send_trade_error_alert(symbol, signal, error_msg)
+                        raise ValueError(error_msg)
 
             # Execute order
             order = self.exchange.execute_order(symbol, signal, quantity)
             if not order:
-                raise ValueError("Order execution failed")
+                error_msg = "Order execution failed"
+                self._send_trade_error_alert(symbol, signal, error_msg)
+                raise ValueError(error_msg)
 
-            # Get execution details
-            executed_qty = float(order['executedQty'])
-            executed_price = float(order['fills'][0]['price'])
-            commission = float(order['fills'][0]['commission'])
-            notional = executed_qty * executed_price
+            # Process successful order execution
+            return self._process_order_execution(symbol, signal, order)
 
-            # Handle position tracking
-            if signal == 'SELL' and symbol in self.open_positions:
-                position = self.open_positions[symbol]
-                entry_price = position['entry_price']
-                entry_time = position.get('entry_time', time.time())
-                
-                # Calculate PnL
-                commission = sum(float(fill['commission']) for fill in order['fills'])
-                pnl_usd = (executed_price - entry_price) * executed_qty - commission
-                pnl_pct = (executed_price - entry_price) / entry_price * 100
-                is_win = pnl_usd >= 0
-                
-                # Update risk manager
-                self.risk.record_trade(
-                    symbol=symbol,
-                    side=signal,
-                    quantity=executed_qty,
-                    price=executed_price,
-                    entry_price=entry_price,
-                    pnl_usd=pnl_usd,
-                    pnl_pct=pnl_pct,
-                    current_balance=self.account_balance
-                )
-                
-                # Send closure alert
+        except ValueError as e:
+            logger.error(f"❌ {str(e)}")
+        except Exception as e:
+            error_msg = f"Unexpected Error: {str(e)}"
+            logger.error(f"❌ {error_msg}", exc_info=True)
+            self._send_trade_error_alert(symbol, signal, error_msg)
+            self.logger.log_error(
+                event_type="TRADE_ERROR",
+                symbol=symbol,
+                side=signal,
+                details=error_msg,
+                stack_trace=traceback.format_exc()
+            )
+
+    def _process_order_execution(self, symbol: str, signal: str, order: dict):
+        """Handle successful order execution"""
+        executed_qty = float(order['executedQty'])
+        executed_price = float(order['fills'][0]['price'])
+        commission = float(order['fills'][0]['commission'])
+        notional = executed_qty * executed_price
+
+        # Handle position tracking
+        if signal == 'SELL' and symbol in self.open_positions:
+            position = self.open_positions[symbol]
+            entry_price = position['entry_price']
+            entry_time = position.get('entry_time', time.time())
+            
+            # Calculate PnL
+            commission = sum(float(fill['commission']) for fill in order['fills'])
+            pnl_usd = (executed_price - entry_price) * executed_qty - commission
+            pnl_pct = (executed_price - entry_price) / entry_price * 100
+            
+            # Update risk manager
+            self.risk.record_trade(
+                symbol=symbol,
+                side=signal,
+                quantity=executed_qty,
+                price=executed_price,
+                entry_price=entry_price,
+                pnl_usd=pnl_usd,
+                pnl_pct=pnl_pct,
+                current_balance=self.account_balance
+            )
+            
+            # Enhanced alert for DOGE
+            if symbol == 'DOGEUSDT':
+                self._send_doge_alert(signal, executed_qty, executed_price, pnl_usd, pnl_pct, entry_time)
+            else:
                 self.alerts.trade_closure_alert(
                     symbol=symbol,
                     side=position['side'],
@@ -664,93 +807,126 @@ class TradingBot:
                     entry_price=entry_price,
                     entry_time=entry_time
                 )
-                
-                # Check if position fully closed
-                remaining_balance = self.exchange.get_account_balance().get(base_asset, 0)
-                if remaining_balance <= Decimal(str(market_info['minQty'])) * 2:  # Tiny residual
-                    del self.open_positions[symbol]
-                    logger.info(f"Fully closed position for {symbol}")
-                else:
-                    # Update remaining position
-                    remaining_qty = float(remaining_balance)
-                    if remaining_qty * executed_price < min_notional * 0.5:
-                        self.open_positions[symbol]['dust'] = True
-                        logger.warning(f"Small residual position remains: {remaining_qty} {symbol}")
-                    else:
-                        self.open_positions[symbol]['quantity'] = remaining_qty
-                
-                # Update account balance estimate
-                self.account_balance += pnl_usd
-                
-            elif signal == 'BUY':
-                # Record new position
-                self.open_positions[symbol] = {
-                    'side': 'BUY',
-                    'quantity': executed_qty,
-                    'entry_price': executed_price,
-                    'entry_time': time.time(),
-                    'dust': False
-                }
-                
-                # Record trade with 0 PnL
-                self.risk.record_trade(
-                    pnl_usd=0,
-                    current_balance=self.account_balance,
-                    is_win=False
-                )
-                
-                # Update account balance estimate
-                self.account_balance -= notional
+            
+            # Check if position fully closed
+            self._update_position_status(symbol, executed_price, executed_qty)
 
-            # Update trade history
-            self.last_trade_time[symbol] = time.time()
-            self._save_last_trade_times()
+        elif signal == 'BUY':
+            # Record new position
+            self.open_positions[symbol] = {
+                'side': 'BUY',
+                'quantity': executed_qty,
+                'entry_price': executed_price,
+                'entry_time': time.time(),
+                'dust': False
+            }
             
-            # Log and alert
-            logger.info(f"✅ Success: {executed_qty} {symbol} @ {executed_price} (${notional:.2f})")
-            self.logger.log_trade(
-                symbol=symbol,
-                side=signal,
-                quantity=executed_qty,
-                price=executed_price,
-                notional=notional,
-                details=f"Commission: {commission} {market_info['quoteAsset']}"
-            )
-            
-            # Send execution alert
-            self.alerts.trade_executed(
-                symbol=symbol,
-                side=signal,
-                price=executed_price,
-                quantity=executed_qty,
-                stop_loss=self._calculate_stop_loss(executed_price, signal == 'BUY'),
-                take_profit=self._calculate_take_profit(executed_price, signal == 'BUY')
+            # Record trade with 0 PnL
+            self.risk.record_trade(
+                pnl_usd=0,
+                current_balance=self.account_balance,
+                is_win=False
             )
 
-        except ValueError as e:
-            error_msg = f"Validation Error: {e}"
-            logger.error(f"❌ {error_msg}")
-            self.logger.log_error(
-                event_type="TRADE_ERROR",
-                symbol=symbol,
-                side=signal,
-                details=error_msg
+        # Update trade history and send alerts
+        self._finalize_trade(symbol, signal, executed_qty, executed_price, notional, order)
+
+    def _send_emergency_alert(self, symbol: str, quantity: float, price: float, drop_pct: float):
+        """Send emergency sale alert"""
+        try:
+            self.alerts._send_alert(
+                f"🚨 <b>EMERGENCY SALE</b>\n"
+                f"• Pair: {symbol}\n"
+                f"• Price Drop: {drop_pct:.2f}%\n"
+                f"• Selling: {quantity:.4f}\n"
+                f"• Value: ${quantity*price:.2f}",
+                "RISK_ALERT"
             )
         except Exception as e:
-            error_msg = f"Unexpected Error: {str(e)}"
-            logger.error(f"❌ {error_msg}", exc_info=True)
-            self.logger.log_error(
-                event_type="TRADE_ERROR",
-                symbol=symbol,
-                side=signal,
-                details=error_msg,
-                stack_trace=traceback.format_exc()
+            logger.error(f"Failed to send emergency alert: {e}")
+
+    def _send_small_position_alert(self, symbol: str, quantity: float, value: float, min_notional: float):
+        """Alert about small position sale attempt"""
+        try:
+            self.alerts._send_alert(
+                f"⚠️ <b>SMALL POSITION SALE</b>\n"
+                f"• Pair: {symbol}\n"
+                f"• Quantity: {quantity:.4f}\n"
+                f"• Value: ${value:.2f}\n"
+                f"• Min Required: ${min_notional:.2f}",
+                "RISK_ALERT"
             )
+        except Exception as e:
+            logger.error(f"Failed to send small position alert: {e}")
+
+    def _send_doge_alert(self, side: str, quantity: float, price: float, pnl_usd: float, pnl_pct: float, entry_time: float):
+        """Special alert for DOGE trades"""
+        try:
+            self.alerts._send_alert(
+                f"🛑 <b>DOGE {side} EXECUTED</b>\n"
+                f"• Quantity: {quantity:.0f}\n"
+                f"• Price: {price:.6f}\n"
+                f"• PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%)\n"
+                f"• Duration: {self._format_duration(time.time() - entry_time)}",
+                "STOP_LOSS" if pnl_usd < 0 else "TAKE_PROFIT"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send DOGE alert: {e}")
+
+    def _update_position_status(self, symbol: str, executed_price: float, executed_qty: float):
+        """Update position status after trade"""
+        market_info = self.exchange.get_market_info(symbol)
+        base_asset = market_info['baseAsset']
+        remaining_balance = self.exchange.get_account_balance().get(base_asset, 0)
+        
+        if remaining_balance <= Decimal(str(market_info['minQty'])) * 2:
+            del self.open_positions[symbol]
+            logger.info(f"Fully closed position for {symbol}")
+        else:
+            remaining_qty = float(remaining_balance)
+            if remaining_qty * executed_price < market_info['minNotional'] * 0.5:
+                self.open_positions[symbol]['dust'] = True
+                logger.warning(f"Small residual position remains: {remaining_qty} {symbol}")
+            else:
+                self.open_positions[symbol]['quantity'] = remaining_qty
+
+    def _finalize_trade(self, symbol: str, signal: str, quantity: float, price: float, notional: float, order: dict):
+        """Finalize trade record keeping"""
+        market_info = self.exchange.get_market_info(symbol)
+        commission = order['fills'][0]['commission']
+        
+        self.last_trade_time[symbol] = time.time()
+        self._save_last_trade_times()
+        
+        logger.info(f"✅ Success: {quantity} {symbol} @ {price} (${notional:.2f})")
+        self.logger.log_trade(
+            symbol=symbol,
+            side=signal,
+            quantity=quantity,
+            price=price,
+            notional=notional,
+            details=f"Commission: {commission} {market_info['quoteAsset']}"
+        )
+        
+        self.alerts.trade_executed(
+            symbol=symbol,
+            side=signal,
+            price=price,
+            quantity=quantity,
+            stop_loss=self._calculate_stop_loss(price, signal == 'BUY'),
+            take_profit=self._calculate_take_profit(price, signal == 'BUY')
+        )
+
+    def _send_trade_error_alert(self, symbol: str, side: str, error_msg: str):
+        """Centralized error alerting for trades"""
+        try:
             self.alerts.error_alert(
                 "TRADE_FAILURE",
-                f"{symbol} {signal} failed: {str(e)}",
+                f"{symbol} {side} failed: {error_msg}",
                 symbol
             )
+        except Exception as alert_error:
+            logger.error(f"Failed to send trade error alert: {alert_error}")
 
     def _execute_stop_loss(self, symbol: str, current_price: float):
         """Emergency sell procedure with comprehensive validation"""
@@ -775,9 +951,17 @@ class TradingBot:
             market_info = self.exchange.get_market_info(symbol)
             step_size = Decimal(str(market_info['stepSize']))
             precision = abs(step_size.as_tuple().exponent)
+
+                        # For DOGE specifically, ensure we meet the 1 DOGE minimum
+            if symbol == 'DOGEUSDT':
+                quantity = float(Decimal(str(available)).quantize(
+                    Decimal('1.'),  # Force whole numbers for DOGE
+                    rounding=ROUND_DOWN)
+                )
+            else:
             
             # Calculate quantity with proper rounding
-            quantity = float(available.quantize(
+                quantity = float(available.quantize(
                 Decimal(10)**-precision,
                 rounding=ROUND_DOWN
             ))
@@ -805,8 +989,33 @@ class TradingBot:
             
             # Calculate PnL
             entry_price = self.open_positions[symbol]['entry_price']
+            entry_time = self.open_positions[symbol].get('entry_time', time.time())
             pnl_usd = (executed_price - entry_price) * executed_qty
             pnl_pct = (executed_price - entry_price) / entry_price * 100
+            
+            # Special handling for DOGE alerts
+            if symbol == 'DOGEUSDT':
+                # Format DOGE-specific message
+                message = (
+                    f"🛑 <b>DOGE STOP LOSS EXECUTED</b>\n"
+                    f"• Quantity: {executed_qty:.0f} DOGE\n"
+                    f"• Price: {executed_price:.6f}\n"
+                    f"• PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%)\n"
+                    f"• Duration: {self._format_duration(time.time() - entry_time)}"
+                )
+                self.alerts._send_alert(message, "STOP_LOSS")
+            else:
+                # Standard alert for other coins
+                self.alerts.trade_closure_alert(
+                    symbol=symbol,
+                    side='SELL',
+                    quantity=executed_qty,
+                    price=executed_price,
+                    pnl_usd=pnl_usd,
+                    pnl_pct=pnl_pct,
+                    entry_price=entry_price,
+                    entry_time=entry_time
+                )
             
             # Update tracking
             del self.open_positions[symbol]
@@ -860,6 +1069,12 @@ class TradingBot:
                 symbol
             )
             return False
+        
+    def _calculate_stop_loss(self, entry_price: float, is_long: bool = True) -> float:
+        """Calculate stop loss price based on configured percentage"""
+        if is_long:
+            return entry_price * (1 - abs(Config.STOP_LOSS_PCT)/100)
+        return entry_price * (1 + abs(Config.STOP_LOSS_PCT)/100)
 
     def _cleanup_dust_positions(self, initial_cleanup: bool = False):
         """Clean up residual dust positions with proper validation and alert cooldown"""

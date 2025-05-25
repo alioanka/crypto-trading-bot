@@ -73,39 +73,57 @@ class RiskManager:
 
     def record_trade(self, symbol: str, side: str, quantity: float, 
                     price: float, entry_price: float, current_balance: float,
-                    pnl_usd: float = None, pnl_pct: float = None):
-        """Record trade with comprehensive metrics"""
+                    pnl_usd: float = None, pnl_pct: float = None) -> Dict:
+        """Comprehensive trade recording with performance metrics
+        
+        Args:
+            symbol: Trading pair symbol
+            side: BUY or SELL
+            quantity: Trade quantity
+            price: Execution price
+            entry_price: Original entry price (for PnL calculation)
+            current_balance: Current account balance
+            pnl_usd: Optional pre-calculated PnL in USD
+            pnl_pct: Optional pre-calculated PnL percentage
+        
+        Returns:
+            Dictionary with trade details and performance metrics
+        """
         try:
-            # Calculate PnL if not provided
-            if pnl_usd is None and side == 'SELL':
-                pnl_usd = (price - entry_price) * quantity
-                pnl_pct = (price - entry_price) / entry_price * 100
-                
-            is_win = pnl_usd >= 0 if pnl_usd is not None else False
-            
-            # Rest of the method...
-            
+            # Calculate PnL if not provided (only for SELL trades)
             if side == 'SELL':
-                pnl_usd = (price - entry_price) * quantity
-                pnl_pct = (price - entry_price) / entry_price * 100
+                if pnl_usd is None:
+                    pnl_usd = (price - entry_price) * quantity
+                if pnl_pct is None:
+                    pnl_pct = (price - entry_price) / entry_price * 100
                 is_win = pnl_usd >= 0
-            
-            # Update metrics
+            else:
+                pnl_usd = 0
+                pnl_pct = 0
+                is_win = False
+
+            # Update trade counters
             self.total_trades += 1
             self.daily_trades += 1
             
-            if is_win:
-                self.winning_trades += 1
-                self.consecutive_wins += 1
-                self.consecutive_losses = 0
-            else:
-                self.losing_trades += 1
-                self.consecutive_losses += 1
-                self.consecutive_wins = 0
-                
+            # Update win/loss streaks
+            if side == 'SELL':
+                if is_win:
+                    self.winning_trades += 1
+                    self.consecutive_wins += 1
+                    self.consecutive_losses = 0
+                    if self.consecutive_wins > self.max_consecutive_wins:
+                        self.max_consecutive_wins = self.consecutive_wins
+                else:
+                    self.losing_trades += 1
+                    self.consecutive_losses += 1
+                    self.consecutive_wins = 0
+                    if self.consecutive_losses > self.max_consecutive_losses:
+                        self.max_consecutive_losses = self.consecutive_losses
+
             # Update PnL tracking
-            self.daily_pnl += pnl_pct
-            self.total_pnl += pnl_usd
+            self.daily_pnl += pnl_pct if side == 'SELL' else 0
+            self.total_pnl += pnl_usd if side == 'SELL' else 0
             
             # Update drawdown calculations
             self.peak_balance = max(self.peak_balance, current_balance)
@@ -114,14 +132,41 @@ class RiskManager:
             
             self.last_trade_time = datetime.now()
             
+            # Record trade in history
+            trade_record = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'side': side,
+                'quantity': quantity,
+                'price': price,
+                'entry_price': entry_price,
+                'pnl_usd': pnl_usd,
+                'pnl_pct': pnl_pct,
+                'is_win': is_win,
+                'balance': current_balance
+            }
+            self.trade_history.append(trade_record)
+            
             logger.info(
                 f"Trade recorded - {symbol} {side} | "
+                f"Qty: {quantity:.4f} | "
+                f"Price: {price:.4f} | "
                 f"PnL: ${pnl_usd:.2f} ({pnl_pct:.2f}%) | "
-                f"Daily: {self.daily_trades}/{self.max_daily_trades}"
+                f"Balance: ${current_balance:.2f}"
             )
             
+            return {
+                'trade': trade_record,
+                'metrics': self.get_performance_metrics(current_balance)
+            }
+                
         except Exception as e:
-            logger.error(f"Error recording trade: {e}")
+            logger.error(f"Error recording trade: {e}", exc_info=True)
+            return {
+                'error': str(e),
+                'trade': None,
+                'metrics': None
+            }
 
     def get_performance_metrics(self, current_balance: float) -> Dict:
         """Calculate comprehensive performance metrics"""
