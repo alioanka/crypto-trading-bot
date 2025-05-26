@@ -21,7 +21,7 @@ class Config:
 
     # Trading Parameters
     CANDLE_INTERVAL = os.getenv("CANDLE_INTERVAL", "5m")  # Changed default to 5m
-    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 10))
+    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", 50))
     
     # Risk Management Parameters
     MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", 0.05))  # 5% max drawdown

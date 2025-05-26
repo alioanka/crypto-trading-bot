@@ -337,6 +337,8 @@ class TradingBot:
                 f"• Avg Loss: <code>{risk_metrics['avg_loss']:.2f}%</code>",
                 f"• Profit Factor: <code>{risk_metrics['profit_factor']:.2f}</code>",
                 f"• Max Drawdown: <code>{risk_metrics['max_drawdown']:.2f}%</code>",
+                f"• Daily Trades: <code>{self.risk.daily_trades:.2f}</code>",
+                f"• Max Daily Trades: <code>{self.risk.max_daily_trades:.2f}</code>",
                 "",
                 f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
             ] + position_lines
