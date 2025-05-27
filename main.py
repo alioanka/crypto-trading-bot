@@ -340,8 +340,8 @@ class TradingBot:
                 f"• Daily Trades: <code>{self.risk.daily_trades:.2f}</code>",
                 f"• Max Daily Trades: <code>{self.risk.max_daily_trades:.2f}</code>",
                 "",
-                f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
-            ] + position_lines
+              #  f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
+            ] #+ position_lines
             
             # Send the alert
             self.alerts._send_alert("\n".join(message), "SYSTEM")
@@ -366,6 +366,8 @@ class TradingBot:
                 f"💓 Basic Heartbeat\n"
                 f"Uptime: {str(datetime.now() - self.start_time)}\n"
                 f"Balance: ${self.account_balance:.2f}\n"
+                f"Daily Trades: {self.risk.daily_trades:.2f}\n"
+                f"Max Daily Trades: {self.risk.max_daily_trades:.2f}\n"
                 f"Positions: {len(self.open_positions)}",
                 "SYSTEM"
             )
@@ -1126,7 +1128,7 @@ class TradingBot:
                 
                 # Alert with cooldown (max once per 4 hours per symbol)
                 last_alert = self.last_dust_alert.get(symbol, 0)
-                if time.time() - last_alert > 14400:  # 4 hours
+                if time.time() - last_alert > 43200:  # 12 hours
                     alert_sent = False
                     for attempt in range(3):
                         try:
