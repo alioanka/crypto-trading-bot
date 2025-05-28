@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List
 from utils.config import Config
@@ -30,45 +31,60 @@ class RiskManager:
         logger.info(f"RiskManager initialized - Max Drawdown: {max_drawdown*100}%, Max Daily Trades: {max_daily_trades}")
 
     def can_trade(self) -> bool:
-        """Check if trading is allowed with automatic daily reset"""
+        """Enhanced trading permission check with dynamic risk controls"""
         self._check_daily_reset()
         
-            # Enhanced cooldown check
+        # Time-based trading hours restriction
+        current_time = datetime.now().time()
+        if not (time(9, 0) <= current_time <= time(16, 0)):  # 9AM-4PM only
+            logger.debug("Outside trading hours - no trading allowed")
+            return False
+        
+        # Dynamic cooldown calculation
+        base_cooldown = self.cooldown_period.total_seconds()
+        
+        # Increase cooldown after consecutive losses
+        if self.consecutive_losses >= 2:
+            cooldown_multiplier = 1 + (self.consecutive_losses * 0.5)  # 1.5x, 2x, 2.5x etc.
+            base_cooldown *= cooldown_multiplier
+            logger.warning(f"Extended cooldown due to {self.consecutive_losses} consecutive losses")
+        
+        # Check cooldown period
         if self.last_trade_time:
             elapsed = (datetime.now() - self.last_trade_time).total_seconds()
-            required_cooldown = self.cooldown_period.total_seconds()
-            
-            # Dynamic cooldown based on recent performance
-            if self.consecutive_losses > 2:
-                required_cooldown *= 2  # Double cooldown after losses
-                
-            if elapsed < required_cooldown:
-                remaining = required_cooldown - elapsed
+            if elapsed < base_cooldown:
+                remaining = base_cooldown - elapsed
                 logger.warning(
                     f"Cooldown active - {int(remaining//60)}m {int(remaining%60)}s remaining. "
-                    f"Consecutive losses: {self.consecutive_losses}"
+                    f"Loss streak: {self.consecutive_losses}"
                 )
                 return False
-        # Debug logging
-        logger.debug(f"Trade check - Daily: {self.daily_trades}/{self.max_daily_trades}, "
-                    f"Drawdown: {self.daily_pnl:.2f}%/{self.max_drawdown*100:.2f}%")
         
+        # Check daily trade limit
         if self.daily_trades >= self.max_daily_trades:
             logger.warning(f"Daily trade limit reached: {self.daily_trades}/{self.max_daily_trades}")
             alerts.error_alert("RISK_LIMIT", "Daily trade limit reached")
             return False
-            
-        if self.daily_pnl <= -abs(self.max_drawdown * 100):  # Convert to percentage
-            logger.warning(f"Max drawdown reached: {self.daily_pnl:.2f}% <= -{self.max_drawdown*100:.2f}%")
+        
+        # Check drawdown limit (convert max_drawdown to percentage)
+        max_drawdown_pct = self.max_drawdown * 100
+        if self.daily_pnl <= -abs(max_drawdown_pct):
+            logger.warning(
+                f"Max drawdown reached: {self.daily_pnl:.2f}% <= -{max_drawdown_pct:.2f}%"
+            )
             alerts.error_alert("RISK_LIMIT", "Max drawdown reached")
             return False
-            
-        if self.last_trade_time and (datetime.now() - self.last_trade_time) < self.cooldown_period:
-            remaining = (self.last_trade_time + self.cooldown_period) - datetime.now()
-            logger.warning(f"Cooldown active - {remaining.seconds//60}m {remaining.seconds%60}s remaining")
+        
+        # Check weekday restrictions (no trading Monday mornings or Friday afternoons)
+        weekday = datetime.now().weekday()
+        if weekday == 0 or (weekday == 4 and current_time.hour >= 15):
+            logger.warning("Avoiding Monday morning/Friday afternoon trading")
             return False
-            
-        logger.debug("Risk check passed - trading allowed")
+        
+        logger.debug(
+            f"Risk check passed - Trades: {self.daily_trades}/{self.max_daily_trades}, "
+            f"PnL: {self.daily_pnl:.2f}%, Loss Streak: {self.consecutive_losses}"
+        )
         return True
 
     def record_trade(self, symbol: str, side: str, quantity: float, 
@@ -215,12 +231,15 @@ class RiskManager:
 
     def _check_daily_reset(self):
         """Reset daily counters at midnight"""
-        today = datetime.now().date()
+        now = datetime.now()
+        today = now.date()
         if today != self.last_reset:
             logger.info("Resetting daily trade counters")
             self.daily_trades = 0
             self.daily_pnl = 0.0
             self.last_reset = today
+            # Also reset last trade time to avoid cooldown issues
+            self.last_trade_time = None
 
     def get_risk_metrics(self) -> Dict:
         """Get current risk metrics"""

@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import logging
+from datetime import datetime, time
 from typing import Dict, List, Optional, Tuple
 from collections import deque
 from utils.config import Config
@@ -35,6 +36,25 @@ class BaseStrategy:
         
         if self.debug_mode:
             logger.info("Debug mode enabled - verbose logging active")
+
+    def _is_good_trading_time(self) -> bool:
+        """Check if current time is within optimal trading hours"""
+        current_time = datetime.now().time()
+        weekday = datetime.now().weekday()
+        
+        # Trading hours (9AM-4PM)
+        if not (time(9, 0) <= current_time <= time(16, 0)):
+            if self.debug_mode:
+                logger.debug("Outside optimal trading hours (9AM-4PM)")
+            return False
+        
+        # Avoid Monday morning and Friday afternoon
+        if weekday == 0 or (weekday == 4 and current_time.hour >= 15):
+            if self.debug_mode:
+                logger.debug("Avoiding Monday morning/Friday afternoon trading")
+            return False
+            
+        return True
 
     def calculate_stop_loss(self, entry_price: float, is_long: bool = True) -> float:
         """Calculate stop loss price based on configured percentage"""
@@ -123,6 +143,10 @@ class EMACrossStrategy(BaseStrategy):
         logger.info(f"EMACrossStrategy initialized: EMA({self.ema_short}/{self.ema_long})")
         
     def generate_signal(self, data: List[Dict]) -> Optional[TradeSignal]:
+        # Time filter check
+        if not self._is_good_trading_time():
+            return None
+            
         if hasattr(self, 'test_signal') and self.test_signal:
             signal = TradeSignal(
                 action=self.test_signal,
@@ -154,6 +178,12 @@ class EMACrossStrategy(BaseStrategy):
                         f"EMA{self.ema_short}: {current['ema_short']:.4f}, "
                         f"EMA{self.ema_long}: {current['ema_long']:.4f}")
         
+        # Volume filter - only trade if volume is above average
+        avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+        if current['volume'] < avg_volume * 1.2:
+            logger.debug("Volume below threshold - no signal generated")
+            return None
+        
         if (previous['ema_short'] <= previous['ema_long']) and (current['ema_short'] > current['ema_long']):
             logger.info("✅ BUY signal generated")
             return TradeSignal(
@@ -176,12 +206,13 @@ class SmartTrendStrategy(BaseStrategy):
     def __init__(self):
         super().__init__()
         self.ema_short = Config.SMARTTREND_EMA_SHORT
-        self.ema_long = Config.SMARTTREND_EMA_LONG
+        self.ema_long = Config.SMARTTREND_EMA_LONG 
         self.rsi_period = Config.SMARTTREND_RSI_PERIOD
         self.rsi_overbought = Config.SMARTTREND_RSI_OVERBOUGHT
         self.rsi_oversold = Config.SMARTTREND_RSI_OVERSOLD
-        logger.info(f"SmartTrendStrategy initialized: EMA({self.ema_short}/{self.ema_long}), "
-                  f"RSI({self.rsi_period}), OB/OS({self.rsi_overbought}/{self.rsi_oversold})")
+        self.adx_threshold = 25  # ADX trend strength threshold
+        self.volume_multiplier = 1.5  # Minimum volume multiplier
+        logger.info(f"Enhanced SmartTrendStrategy initialized")
         
     def _calculate_rsi(self, prices: List[float]) -> List[float]:
         """Calculate RSI with or without TA-Lib"""
@@ -214,6 +245,10 @@ class SmartTrendStrategy(BaseStrategy):
         return rsi
 
     def generate_signal(self, data: List[Dict]) -> Optional[TradeSignal]:
+        # Time filter check
+        if not self._is_good_trading_time():
+            return None
+            
         if self.test_signal:
             signal = TradeSignal(
                 action=self.test_signal,
@@ -235,50 +270,57 @@ class SmartTrendStrategy(BaseStrategy):
             
         df = pd.DataFrame(data)
         closes = df['close'].values
+        volumes = df['volume'].values
         
+        # Calculate all indicators
         df['ema_short'] = df['close'].ewm(span=self.ema_short, adjust=False).mean()
         df['ema_long'] = df['close'].ewm(span=self.ema_long, adjust=False).mean()
         df['rsi'] = self._calculate_rsi(closes)
         
+        if TA_LIB_AVAILABLE:
+            df['adx'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
+            df['obv'] = talib.OBV(df['close'], df['volume'])
+        else:
+            df['adx'] = 25  # Fallback if TA-Lib not available
+            df['obv'] = (df['volume'] * (2*(df['close'].diff() > 0)-1).cumsum())
+        
         current = df.iloc[-1]
         previous = df.iloc[-2]
         
-        if self.debug_mode:
-            logger.debug(f"Current indicators - Price: {current['close']}, "
-                        f"EMA{self.ema_short}: {current['ema_short']:.4f}, "
-                        f"EMA{self.ema_long}: {current['ema_long']:.4f}, "
-                        f"RSI: {current['rsi']:.2f}")
-        
-        # Bullish conditions
+        # Enhanced Bullish Conditions:
         ema_cross = current['ema_short'] > current['ema_long']
         rsi_above = current['rsi'] > 50
         rsi_cross = previous['rsi'] <= 50
         rsi_not_overbought = current['rsi'] < self.rsi_overbought
+        adx_strong = current['adx'] > self.adx_threshold
+        volume_ok = current['volume'] > volumes[:-1].mean() * self.volume_multiplier
         
-        if all([ema_cross, rsi_above, rsi_cross, rsi_not_overbought]):
-            logger.info("✅ BUY signal generated")
+        if all([ema_cross, rsi_above, rsi_cross, rsi_not_overbought, adx_strong, volume_ok]):
+            confidence = min(1.0, (current['rsi'] - 50)/50 + (current['adx']/100))
             return TradeSignal(
                 action='BUY',
                 price=current['close'],
                 stop_loss=self.calculate_stop_loss(current['close']),
                 take_profit=self.calculate_take_profit(current['close']),
-                confidence=(current['rsi'] - 50)/50  # Normalized 0-1
+                confidence=confidence
             )
             
-        # Bearish conditions
+        # Enhanced Bearish Conditions:
         ema_cross = current['ema_short'] < current['ema_long']
         rsi_below = current['rsi'] < 50
         rsi_cross = previous['rsi'] >= 50
         rsi_not_oversold = current['rsi'] > self.rsi_oversold
+        adx_strong = current['adx'] > self.adx_threshold
+        volume_ok = current['volume'] > volumes[:-1].mean() * self.volume_multiplier
         
-        if all([ema_cross, rsi_below, rsi_cross, rsi_not_oversold]):
-            logger.info("✅ SELL signal generated")
+        if all([ema_cross, rsi_below, rsi_cross, rsi_not_oversold, adx_strong, volume_ok]):
+            confidence = min(1.0, (50 - current['rsi'])/50 + (current['adx']/100))
             return TradeSignal(
                 action='SELL',
                 price=current['close'],
                 stop_loss=self.calculate_stop_loss(current['close'], is_long=False),
                 take_profit=self.calculate_take_profit(current['close'], is_long=False),
-                confidence=(50 - current['rsi'])/50  # Normalized 0-1
+                confidence=confidence
             )
             
         return None

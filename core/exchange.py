@@ -13,9 +13,10 @@ alerts = AlertSystem()
 
 class BinanceAPI:
     STABLE_PAIRS = [
-        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT',
-        'SOLUSDT', 'ADAUSDT', 'DOGEUSDT', 'DOTUSDT',
-        'AVAXUSDT', 'LTCUSDT'
+        'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'SOLUSDT', 
+        'ADAUSDT', 'DOGEUSDT', 'DOTUSDT', 'AVAXUSDT', 'LTCUSDT',
+        'MATICUSDT', 'LINKUSDT', 'ATOMUSDT', 'UNIUSDT', 'FILUSDT',
+        'XLMUSDT', 'ETCUSDT', 'ALGOUSDT', 'VETUSDT', 'THETAUSDT'
     ]
 
     DEFAULT_VALUES = {

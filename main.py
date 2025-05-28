@@ -340,8 +340,8 @@ class TradingBot:
                 f"• Daily Trades: <code>{self.risk.daily_trades:.2f}</code>",
                 f"• Max Daily Trades: <code>{self.risk.max_daily_trades:.2f}</code>",
                 "",
-              #  f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
-            ] #+ position_lines
+                f"📈 <b>Open Positions ({len(position_metrics['positions'])})</b>"
+            ] + position_lines
             
             # Send the alert
             self.alerts._send_alert("\n".join(message), "SYSTEM")
@@ -665,19 +665,27 @@ class TradingBot:
 
             # Calculate quantity based on signal type
             if signal == 'BUY':
-                risk_amount = min(self.account_balance * 0.05,
-                                self.account_balance * Config.RISK_PER_TRADE)
-                quantity = risk_amount / price
+                # Base risk amount
+                risk_amount = min(
+                    self.account_balance * Config.RISK_PER_TRADE,
+                    self.account_balance * 0.1  # Max 10% per trade
+                )
                 
-                quantity = math.floor(quantity * 10**precision) / 10**precision
+                # Adjust based on volatility (ATR)
+                atr = self._calculate_atr(symbol)
+                if atr and atr > 0:
+                    volatility_adjustment = min(2.0, (atr / price) * 100)  # 0.5-2.0 range
+                    risk_amount /= volatility_adjustment
+                
+                quantity = risk_amount / price
                 
                 if quantity < min_qty:
                     quantity = min_qty
                     logger.info(f"Adjusting to minimum quantity: {min_qty}")
                 
                 if (quantity * price) < min_notional:
-                    min_qty_needed = math.ceil((min_notional / price) * 10**precision) / 10**precision
-                    quantity = max(min_qty_needed, min_qty)
+                    quantity = math.ceil(min_notional / price * 10**precision) / 10**precision
+                    quantity = max(quantity, min_qty)
                     logger.info(f"Adjusting to meet minimum notional: {quantity}")
 
             else:  # SELL
@@ -770,8 +778,9 @@ class TradingBot:
     def _process_order_execution(self, symbol: str, signal: str, order: dict):
         """Handle successful order execution"""
         executed_qty = float(order['executedQty'])
-        executed_price = float(order['fills'][0]['price'])
-        commission = float(order['fills'][0]['commission'])
+        fills = order.get('fills', [{}])
+        executed_price = float(fills[0].get('price', 0))
+        commission = sum(float(fill.get('commission', 0)) for fill in fills)
         notional = executed_qty * executed_price
 
         # Handle position tracking
@@ -780,10 +789,9 @@ class TradingBot:
             entry_price = position['entry_price']
             entry_time = position.get('entry_time', time.time())
             
-            # Calculate PnL
-            commission = sum(float(fill['commission']) for fill in order['fills'])
+            # Improved PnL calculation
             pnl_usd = (executed_price - entry_price) * executed_qty - commission
-            pnl_pct = (executed_price - entry_price) / entry_price * 100
+            pnl_pct = ((executed_price - entry_price) / entry_price) * 100
             
             # Update risk manager
             self.risk.record_trade(
@@ -827,9 +835,14 @@ class TradingBot:
             
             # Record trade with 0 PnL
             self.risk.record_trade(
+                symbol=symbol,
+                side=signal,
+                quantity=executed_qty,
+                price=executed_price,
+                entry_price=executed_price,
                 pnl_usd=0,
-                current_balance=self.account_balance,
-                is_win=False
+                pnl_pct=0,
+                current_balance=self.account_balance
             )
 
         # Update trade history and send alerts
@@ -1081,9 +1094,9 @@ class TradingBot:
         return entry_price * (1 + abs(Config.STOP_LOSS_PCT)/100)
 
     def _cleanup_dust_positions(self, initial_cleanup: bool = False):
-        """Clean up residual dust positions with proper validation and alert cooldown"""
+        """Clean up residual dust positions with proper validation"""
         dust_symbols = []
-        dust_threshold = 1.0  # $1 threshold for dust
+        dust_threshold = max(5.0, Config.MIN_NOTIONAL * 0.5)  # Minimum $5 or half of min notional
         
         for symbol, position in list(self.open_positions.items()):
             try:
@@ -1103,9 +1116,7 @@ class TradingBot:
                 # Calculate position value
                 position_value = position['quantity'] * current_price
                 
-                # Use the smaller of $1 or 20% of min notional
-                threshold = min(dust_threshold, market_info['minNotional'] * 0.2)
-                if position_value < threshold:
+                if position_value < dust_threshold:
                     position['dust'] = True
                     dust_symbols.append((symbol, position_value))
                     logger.warning(f"Dust position detected: {symbol} (${position_value:.2f})")
@@ -1122,30 +1133,19 @@ class TradingBot:
                     del self.open_positions[symbol]
                     logger.info(f"Removed dust position: {symbol} (${value:.2f})")
                 
-                # Convert to USDT if during initial cleanup and value > $0.10
-                if initial_cleanup and value > 0.10:
+                # Convert to USDT if value is worth converting
+                if value > 1.0:  # Only convert if worth more than $1
                     self._convert_dust_to_usdt(symbol, value)
                 
-                # Alert with cooldown (max once per 4 hours per symbol)
+                # Alert with cooldown
                 last_alert = self.last_dust_alert.get(symbol, 0)
-                if time.time() - last_alert > 43200:  # 12 hours
-                    alert_sent = False
-                    for attempt in range(3):
-                        try:
-                            self.alerts.error_alert(
-                                "DUST_CLEANUP",
-                                f"Removed dust position: {symbol} (${value:.2f})",
-                                symbol
-                            )
-                            self.last_dust_alert[symbol] = time.time()
-                            alert_sent = True
-                            break
-                        except Exception as e:
-                            logger.warning(f"Alert attempt {attempt+1} failed: {e}")
-                            time.sleep(1)
-                    
-                    if not alert_sent:
-                        logger.error(f"Failed to send dust alert for {symbol}")
+                if time.time() - last_alert > 43200:  # 12 hours cooldown
+                    self.alerts.error_alert(
+                        "DUST_CLEANUP",
+                        f"Removed dust position: {symbol} (${value:.2f})",
+                        symbol
+                    )
+                    self.last_dust_alert[symbol] = time.time()
                 
             except Exception as e:
                 logger.error(f"Failed to process {symbol} dust: {e}")
